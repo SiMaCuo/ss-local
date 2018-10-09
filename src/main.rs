@@ -6,7 +6,7 @@ use tokio::codec::BytesCodec;
 use tokio::codec::Decoder;
 
 fn main() {
-    let addr = "127.0.0.1:6142".parse().unwrap();
+    let addr = "127.0.0.1:18109".parse().unwrap();
     let listener = TcpListener::bind(&addr).unwrap();
     println!("Listening on: {}", addr);
 
