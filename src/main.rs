@@ -1,9 +1,26 @@
 extern crate tokio;
+extern crate bytes;
 
 use tokio::net::TcpListener;
 use tokio::prelude::*;
 use tokio::codec::BytesCodec;
 use tokio::codec::Decoder;
+
+struct Peer {
+    stream: TcpStream,
+    rd: BytesMut,
+    wr: BytesMut,
+}
+
+impl Peer {
+    fn new(stream: TcpStream) -> Self {
+        Peer {
+            stream,
+            rd: BytesMut::new(),
+            wr: BytesMut::new(),
+        }
+    }
+}
 
 fn main() {
     let addr = "127.0.0.1:18109".parse().unwrap();
