@@ -5,3 +5,4 @@ authors = ["feixianer <noemail@anybox.com>"]
 
 [dependencies]
 tokio = "0.1"
+bytes = "0.4"

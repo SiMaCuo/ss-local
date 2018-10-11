@@ -5,6 +5,8 @@ use tokio::net::TcpListener;
 use tokio::prelude::*;
 use tokio::codec::BytesCodec;
 use tokio::codec::Decoder;
+use bytes::BytesMut;
+use tokio::net::TcpStream;
 
 struct Peer {
     stream: TcpStream,
