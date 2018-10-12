@@ -1,5 +1,12 @@
 pub const SOCKS5_VERSION: u8 = 5;
 
+pub enum Socks5Phase {
+    Initialize,
+    Handshake,
+    Http,
+    Streaming,
+}
+
 pub enum Method {
     NoAuthRequired = 0x00,
     UnAcceptable = 0xff,
