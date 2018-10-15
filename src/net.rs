@@ -2,16 +2,16 @@ extern crate tokio;
 extern crate bytes;
 extern crate futures;
 
-use bytes::BytesMut;
 use tokio::net::{TcpListener, TcpStream};
 use std::net::SocketAddr;
 use std::io;
+use std::vec;
 use Socks5::Socks5Phase;
 
 struct Transfer {
     local: TcpStream,
     remote: TcpStream,
-    buf: BytesMut,
+    buf: Vec<u8>,
     phase: Socks5Phase,
 }
 
@@ -19,7 +19,7 @@ impl Transfer {
     fn new(local: TcpStream) -> Self {
         Transfer {
             local,
-            buf: BytesMut::with_capacity(2048),
+            buf: Vec::with_capacity(2048),
             phase: Socks5Phase::Initialize,
         }
     }
