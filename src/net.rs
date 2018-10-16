@@ -15,6 +15,7 @@ struct Transfer {
     remote: TcpStream,
     buf: Vec<u8>,
     idx: usize,
+    amt: u64,
     phase: Socks5Phase,
 }
 
@@ -24,6 +25,7 @@ impl Transfer {
             local,
             buf: Vec::with_capacity(2048),
             idx: 0,
+            amt: 0,
             phase: Socks5Phase::Initialize,
         }
     }
@@ -35,13 +37,30 @@ impl Future for Transfer {
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error>
         match phase {
-            Socks5Phase::Initlize {
+            Socks5Phase::Initlize => {
                 let ready: Async<Ready> = self.local.poll_read_ready(Ready::readable())?
                 if ready.is_not_ready(self) {
                     return Ok(Async::NotReady);
                 }
 
-                let len = self.buf.capacity() - self.buf.len();
+                if self.buf.capacity() > self.buf.len() {
+                    match local.read(&mut buf[self.buf.len()..self.buf.capacity()]) {
+                        Ok(n) => {
+                            if n == 0 {
+                                self.local.shutdown(ShutDown::Both);
+                                return Ok(Async::Ready(self.buf.amt))
+                            }
+
+                            self.buf.amt += n as u64;
+                        }
+                        Err(err) if err == ErrorKind::Interrupted => return Ok(Async::NotReady);
+                        _ => {
+                            self.local.shutdown(ShutDown::Both);
+                            return Ok(Async::Ready(self.buf.amt))
+                        }
+                    }
+                }
+
 
 
                 
