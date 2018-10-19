@@ -49,7 +49,7 @@ impl MethodSelectRequest {
         MethodSelectRequest {
             ver: SOCKS5_VERSION,
             nmethods: 1,
-            method: Method::NoAuthRequired as u8,
+            method: Method::UnAcceptable as u8
         }
     }
 }
@@ -64,7 +64,7 @@ impl MethodSelectResponse {
     pub fn new() -> Self {
         MethodSelectResponse {
             ver: SOCKS5_VERSION,
-            method: Method::NoAuthRequired as u8,
+            method: Method::UnAcceptable as u8,
         }
     }
 }
