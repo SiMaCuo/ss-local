@@ -5,7 +5,7 @@ extern crate mio;
 
 use tokio::net::{TcpListener, TcpStream};
 use std::net::SocketAddr;
-use std::{io, vec, mem, slice};
+use std::{io, vec, mem, slice, ptr};
 use Socks5::Socks5Phase;
 use mio::Ready;
 
@@ -17,11 +17,11 @@ struct Transfer {
     buf: Vec<u8>,
     idx: usize,
     amt: u64,
-    phase: Socks5Phase,
+    phase: mut Socks5Phase,
 }
 
 impl Transfer {
-    fn new(local: TcpStream) -> Self {
+    pub fn new(local: TcpStream) -> Self {
         Transfer {
             local,
             buf: Vec::with_capacity(BUF_SIZE),
@@ -30,6 +30,48 @@ impl Transfer {
             phase: Socks5Phase::Initialize,
         }
     }
+
+    fn local_handshake(&mut self) -> Result<Asnyc<Self::Item, Self::Error>
+    {
+        let buf_len = self.buf.len();
+        if buf_len < mem::size_of::<Socks5::Request>() {
+            return Ok(Asnyc::NotReady);
+        }
+        
+        let ver = unsafe { self.buf.get_unchecked(0) }
+        if ver != SOCKS5_VERSION {
+            return Ok(Async::Ready(self.amt));
+        }
+        
+        let resp = Socks5::Response::new();
+        let cmd = unsafe { self.buf.get_unchecked(1) }
+        if cmd != Socks5::Connect {
+            resp.rep = Socks5::CmdNotSupported;
+            let bytes: &[u8] = unsafe { slice::from_raw_parts(
+                    (&resp as *const Socks5::Response) as *const u8,
+                    mem::size_of::<Socks5::Response>())
+            }
+            self.local.write_all(bytes);
+
+            return Ok(Asnyc::Ready(self.buf.amt));
+        }
+
+        let atyp: Socks5::AddrType = unsafe { 
+            mem::transmute<u8, Socks5::AddrType>(self.buf.get_unchecked(3)) 
+        }
+        
+        match atyp {
+            Socks5::V4 => {
+            }
+
+            Socks::Domain => {
+            }
+
+            Socks5::V6 => {
+            }
+        }
+
+        
 }
 
 impl Future for Transfer {
@@ -71,16 +113,21 @@ impl Future for Transfer {
                 if self.buf.len() < mem::size_of::<Socks5::MethodSelectRequest>() {
                     return Ok(Asnyc::NotReady);
                 }
-
+                
                 if self.buf.get_unchecked(0) != Socks5::SOCKS5_VERSION {
                     self.local.shutdown(ShutDown::Both);
                     return Ok(Async::Ready(self.buf.amt));
                 }
 
+                let nmethods = unsafe {self.buf.get_unchecked(1) }
+                let method_len = nmethods + mem::size_of::<Socks5::MethodSelectRequest>() - 1;
+                if self.buf.len() < method_len {
+                    return Ok(Asnyc::NotReady);
+                }
+
                 let mut resp = Socks5::MethodSelectResponse::new();
-                let nmethods = self.buf.get_unchecked(1);
                 for idx in (1..nmethods) {
-                    if self.buf.get_unchecked(1+idx) == Method::NoAuthRequired {
+                    if unsafe {self.buf.get_unchecked(1+idx)} == Method::NoAuthRequired {
                         resp.method = Method::NoAuthRequired;
                         break;
                     }
@@ -92,19 +139,32 @@ impl Future for Transfer {
                 }
                 
                 let bytes: &[u8] = unsafe {
-                    let b = slice::from_raw_parts(
+                    slice::from_raw_parts(
                         (&resp as *const Socks5::MethodSelectResponse) as *const u8,
                         mem::size_of::<Socks5::MethodSelectResponse>())
                 }
 
                 self.local.write_all(bytes);
-                self.buf.set_len(0);
-            }
+                phase = Socks5::Handshake;
+                if method_len < self.buf.len() {
+                    unsafe {
+                        ptr::copy(self.buf.as_mut_ptr(),  
+                                  self.buf.as_ptr().offset(method_len as isize),
+                                  self.buf.len() - method_len); 
+                    }
+                    self.buf.set_len(self.buf.len() - method_len);
+                    
+                    continue;
+                }
 
-            Ok(Asnyc::NotReady)
+                self.buf.truncate(0);
+                
+                Ok(Async::NotReady)
+            }
+            
+            Socks5::Handshake => 
         }
 
-        _ => Ok(Async::NotReady)
     }
 }
 
