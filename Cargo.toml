@@ -1,8 +1,11 @@
 [package]
 name = "ss-local"
 version = "0.1.0"
-authors = ["feixianer <noemail@anybox.com>"]
+authors = ["simacuo <noemail@anybox.com>"]
 
 [dependencies]
 tokio = "0.1"
 bytes = "0.4"
+libc  = "0.2"
+httparse = "1.3"
+

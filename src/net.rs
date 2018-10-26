@@ -2,10 +2,10 @@ extern crate tokio;
 extern crate bytes;
 extern crate futures;
 extern crate mio;
+extern crate libc;
 
 use tokio::net::{TcpListener, TcpStream};
-use std::net::SocketAddr;
-use std::{io, vec, mem, slice, ptr};
+use std::{io, vec, mem, slice, ptr, net};
 use Socks5::Socks5Phase;
 use mio::Ready;
 
@@ -60,11 +60,26 @@ impl Transfer {
             mem::transmute<u8, Socks5::AddrType>(self.buf.get_unchecked(3)) 
         }
         
+        let request_len = mem::size_of::<Socks5::Request>();
         match atyp {
             Socks5::V4 => {
+                let ptr = self.buf.as_ptr();
+                let ip = net::Ipv4Addr::from( 
+                    unsafe {
+                        let raw: *const u32 = ptr.offset(request_len as isize) as *const u32;
+                        mem::transmute_copy<u32, u32>(raw)
+                    } );
+                let u32_len = mem::sizeof::<u32>();
+                let port: u16 = u16::from_be(
+                    unsafe {
+                        let raw: *const u16 = ptr.offset((request_len + u32_len) as isize)) as *const u16;
+                        mem::transmute_copy<u16, u16>(raw)
+                    } );
             }
 
             Socks::Domain => {
+                let name_len = unsafe { self.buf.get_unchecked(request_len) }
+                
             }
 
             Socks5::V6 => {
