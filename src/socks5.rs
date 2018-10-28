@@ -19,9 +19,9 @@ pub enum Command {
 }
 
 pub enum AddrType {
-    V4(u8) = 0x01,
-    Domain(u8) = 0x03,
-    V6(u8) = 0x04,
+    V4 = 0x01,
+    Domain = 0x03,
+    V6 = 0x04,
 }
 
 pub enum Reply {
@@ -91,7 +91,7 @@ impl Request {
 #[repr(C, packed)]
 pub struct Response {
     ver: u8,
-    rep: mut u8,
+    rep: u8,
     rsv: u8,
     atyp: u8,
 }
@@ -100,9 +100,9 @@ impl Response {
     pub fn new() -> Self {
         Response {
             ver: SOCKS5_VERSION,
-            rep: Succeeded,
+            rep: Reply::Succeeded as u8,
             rsv: 0,
-            atyp: V4,
+            atyp: AddrType::V4 as u8,
         }
     }
 }

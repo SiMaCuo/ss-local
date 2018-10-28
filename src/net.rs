@@ -9,7 +9,7 @@ use std::{io, vec, mem, slice, ptr, net};
 use Socks5::Socks5Phase;
 use mio::Ready;
 
-const BUF_SIZE: u32 = 2048
+const BUF_SIZE: u32 = 2048;
 
 struct Transfer {
     local: TcpStream,
@@ -17,11 +17,12 @@ struct Transfer {
     buf: Vec<u8>,
     idx: usize,
     amt: u64,
-    phase: mut Socks5Phase,
+    phase: Socks5Phase,
 }
 
 impl Transfer {
-    pub fn new(local: TcpStream) -> Self {
+    pub fn new(local: TcpStream) -> Self 
+    {
         Transfer {
             local,
             buf: Vec::with_capacity(BUF_SIZE),
@@ -31,14 +32,14 @@ impl Transfer {
         }
     }
 
-    fn local_handshake(&mut self) -> Result<Asnyc<Self::Item, Self::Error>
+    fn local_handshake(&mut self) -> Result<Asnyc<Self::Item, Self::Error>> 
     {
         let buf_len = self.buf.len();
         if buf_len < mem::size_of::<Socks5::Request>() {
             return Ok(Asnyc::NotReady);
         }
         
-        let ver = unsafe { self.buf.get_unchecked(0) }
+        let ver = unsafe { self.buf.get_unchecked(0) };
         if ver != SOCKS5_VERSION {
             return Ok(Async::Ready(self.amt));
         }
@@ -63,6 +64,10 @@ impl Transfer {
         let request_len = mem::size_of::<Socks5::Request>();
         match atyp {
             Socks5::V4 => {
+                if self.buf.len() - request_len < mem::size_of::<net::Ipv4Addr>() + mem::size_of::<u16>() {
+                    return Ok(Asnyc::NotReady);
+                }
+
                 let ptr = self.buf.as_ptr();
                 let ip = net::Ipv4Addr::from( 
                     unsafe {
@@ -72,21 +77,55 @@ impl Transfer {
                 let u32_len = mem::sizeof::<u32>();
                 let port: u16 = u16::from_be(
                     unsafe {
-                        let raw: *const u16 = ptr.offset((request_len + u32_len) as isize)) as *const u16;
+                        let raw: *const u16 = ptr.offset((request_len + u32_len) as isize) as *const u16;
                         mem::transmute_copy<u16, u16>(raw)
                     } );
             }
 
             Socks::Domain => {
+                if self.buf.len() < request_len + 1 {
+                    return Ok(Async::NotReady);
+                }
+
                 let name_len = unsafe { self.buf.get_unchecked(request_len) }
+                if self.buf.len() < request_len + name_len + 1 {
+                    return Ok(Async::NotReady);
+                }
+
+                let name_buf: Vec<u8> = Vec::with_capacity(name_len);
+                unsafe {
+                    let name_ptr = self.buf.as_ptr().offset((request_len + 1) as isize);
+                    ptr::copy_nonoverlapping(name_ptr, name_buf.as_mut_ptr(), name_len);
+                    name_buf.set_len(name_len);
+                }
                 
+                let port: u16 = u16::from_be(
+                    unsafe {
+                        let ptr = self.buf.as_ptr();
+                        let raw: *const u16 = ptr.offset((request_len+name_len+1) as isize) as *const u16;
+                        *raw
+                    } );
             }
 
             Socks5::V6 => {
+                let addr6_len = mem::size_of::<net::Ipv6Addr>();
+                let port_len = mem::size_of::<u16>();
+                if self.buf.len() < request_len + addr6_len + port_len {
+                    return Ok(Async::NotReady);
+                }
+                
+                let mut addr6_bytes: [u8; 16] = unsafe { mem::uninitialized() }
+                addr6_bytes.copy_from_slice((&self.buf)[request_len, request_len+addr6_len]);
+                let ip = Ipv6Addr::from(addr6_bytes);
+                let port: u16 = u16::from_be(
+                    unsafe {
+                        let ptr = self.buf.as_ptr();
+                        let raw = ptr.offset((request_len+addr6_len) as isize) as *const u16;
+                        *raw
+                    } );
             }
         }
-
-        
+    }
 }
 
 impl Future for Transfer {
@@ -177,7 +216,9 @@ impl Future for Transfer {
                 Ok(Async::NotReady)
             }
             
-            Socks5::Handshake => 
+            Socks5::Handshake => {
+                self.local_handshake()
+            }
         }
 
     }

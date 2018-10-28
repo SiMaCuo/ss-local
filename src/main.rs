@@ -3,8 +3,7 @@ extern crate bytes;
 
 use tokio::net::TcpListener;
 use tokio::prelude::*;
-use tokio::codec::BytesCodec;
-use tokio::codec::Decoder;
+use net::Transfer;
 
 fn main() {
     let addr = "127.0.0.1:18109".parse().unwrap();
@@ -15,14 +14,9 @@ fn main() {
         .map_err(|e| println!("failed to accept socket; error = {:?}", e))
         .for_each(|stream| {
             println!("accepted socket; addr={:?}", stream.peer_addr().unwrap());
-            let frame = BytesCodec::new().framed(stream);
-            let (_, splitstream) = frame.split();
             
-            let processor = splitstream.for_each(|bytes| {
-                println!("bytes: {:?}", bytes);
-                Ok(())
-            })
-            .and_then(|()| {
+            let mut t: Transfer = Transfer::new(stream);
+            t.then(|()| {
                 println!("Socket received FIN packet and closed connection.");
                 Ok(())
             })
@@ -35,7 +29,7 @@ fn main() {
                 Ok(())
             });
 
-            tokio::spawn(processor)
+            tokio::spawn(t)
         });
 
     println!("server running on localhost:6142");
