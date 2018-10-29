@@ -3,7 +3,7 @@ extern crate bytes;
 
 use tokio::net::TcpListener;
 use tokio::prelude::*;
-use net::Transfer;
+use trans::Transfer;
 
 fn main() {
     let addr = "127.0.0.1:18109".parse().unwrap();

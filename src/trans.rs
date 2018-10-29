@@ -5,9 +5,10 @@ extern crate mio;
 extern crate libc;
 
 use tokio::net::{TcpListener, TcpStream};
+use tokio::prelude::*;
+use futures::future::Future;
 use std::{io, vec, mem, slice, ptr, net};
-use Socks5::Socks5Phase;
-use mio::Ready;
+use super::socks5::*;
 
 const BUF_SIZE: u32 = 2048;
 
@@ -35,7 +36,7 @@ impl Transfer {
     fn local_handshake(&mut self) -> Result<Asnyc<Self::Item, Self::Error>> 
     {
         let buf_len = self.buf.len();
-        if buf_len < mem::size_of::<Socks5::Request>() {
+        if buf_len < mem::size_of::<Request>() {
             return Ok(Asnyc::NotReady);
         }
         
@@ -44,26 +45,26 @@ impl Transfer {
             return Ok(Async::Ready(self.amt));
         }
         
-        let resp = Socks5::Response::new();
-        let cmd = unsafe { self.buf.get_unchecked(1) }
-        if cmd != Socks5::Connect {
-            resp.rep = Socks5::CmdNotSupported;
+        let resp = Response::new();
+        let cmd = unsafe { self.buf.get_unchecked(1) };
+        if cmd != Command::Connect {
+            resp.rep = Command::CmdNotSupported;
             let bytes: &[u8] = unsafe { slice::from_raw_parts(
-                    (&resp as *const Socks5::Response) as *const u8,
-                    mem::size_of::<Socks5::Response>())
-            }
+                    (&resp as *const Response) as *const u8,
+                    mem::size_of::<Response>())
+            };
             self.local.write_all(bytes);
 
             return Ok(Asnyc::Ready(self.buf.amt));
         }
 
-        let atyp: Socks5::AddrType = unsafe { 
-            mem::transmute<u8, Socks5::AddrType>(self.buf.get_unchecked(3)) 
-        }
+        let atyp: AddrType = unsafe { 
+            mem::transmute::<u8, AddrType>(self.buf.get_unchecked(3)) 
+        };
         
-        let request_len = mem::size_of::<Socks5::Request>();
+        let request_len = mem::size_of::<Request>();
         match atyp {
-            Socks5::V4 => {
+            V4 => {
                 if self.buf.len() - request_len < mem::size_of::<net::Ipv4Addr>() + mem::size_of::<u16>() {
                     return Ok(Asnyc::NotReady);
                 }
@@ -72,22 +73,22 @@ impl Transfer {
                 let ip = net::Ipv4Addr::from( 
                     unsafe {
                         let raw: *const u32 = ptr.offset(request_len as isize) as *const u32;
-                        mem::transmute_copy<u32, u32>(raw)
+                        mem::transmute_copy::<u32, u32>(raw)
                     } );
-                let u32_len = mem::sizeof::<u32>();
+                let u32_len = mem::size_of::<u32>();
                 let port: u16 = u16::from_be(
                     unsafe {
                         let raw: *const u16 = ptr.offset((request_len + u32_len) as isize) as *const u16;
-                        mem::transmute_copy<u16, u16>(raw)
+                        mem::transmute_copy::<u16, u16>(raw)
                     } );
             }
 
-            Socks::Domain => {
+            Domain => {
                 if self.buf.len() < request_len + 1 {
                     return Ok(Async::NotReady);
                 }
 
-                let name_len = unsafe { self.buf.get_unchecked(request_len) }
+                let name_len = unsafe { self.buf.get_unchecked(request_len) };
                 if self.buf.len() < request_len + name_len + 1 {
                     return Ok(Async::NotReady);
                 }
@@ -107,16 +108,16 @@ impl Transfer {
                     } );
             }
 
-            Socks5::V6 => {
+            V6 => {
                 let addr6_len = mem::size_of::<net::Ipv6Addr>();
                 let port_len = mem::size_of::<u16>();
                 if self.buf.len() < request_len + addr6_len + port_len {
                     return Ok(Async::NotReady);
                 }
                 
-                let mut addr6_bytes: [u8; 16] = unsafe { mem::uninitialized() }
-                addr6_bytes.copy_from_slice((&self.buf)[request_len, request_len+addr6_len]);
-                let ip = Ipv6Addr::from(addr6_bytes);
+                let mut addr6_bytes: [u8; 16] = unsafe { mem::uninitialized() };
+                addr6_bytes.copy_from_slice((&self.buf)[request_len..request_len+addr6_len]);
+                let ip = net::Ipv6Addr::from(addr6_bytes);
                 let port: u16 = u16::from_be(
                     unsafe {
                         let ptr = self.buf.as_ptr();
@@ -130,13 +131,13 @@ impl Transfer {
 
 impl Future for Transfer {
     type Item = ();
-    type Error = io:Error;
+    type Error = io::Error;
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error>
     {
         match phase {
             Socks5Phase::Initlize => {
-                let read_ready: Async<Ready> = self.local.poll_read_ready(Ready::readable())?
+                let read_ready: Async<Ready> = self.local.poll_read_ready(Ready::readable())?;
                 if read_ready.is_not_ready() {
                     return Ok(Async::NotReady);
                 }
@@ -147,7 +148,7 @@ impl Future for Transfer {
                 }
 
                 if BUF_SIZE > self.buf.len() {
-                    match local.read(&mut buf[self.buf.len()..BUF_SIZE]) {
+                    match self.local.read(&mut self.buf[self.buf.len()..BUF_SIZE]) {
                         Ok(n) => {
                             if n == 0 {
                                 self.local.shutdown(ShutDown::Both);
@@ -156,7 +157,11 @@ impl Future for Transfer {
 
                             self.buf.amt += n as u64;
                         }
-                        Err(err) if err == ErrorKind::Interrupted => return Ok(Async::NotReady);
+
+                        Err(err) if err == ErrorKind::Interrupted => {
+                            return Ok(Async::NotReady);
+                        }
+
                         _ => {
                             self.local.shutdown(ShutDown::Both);
                             return Ok(Async::Ready(self.buf.amt));
@@ -164,23 +169,23 @@ impl Future for Transfer {
                     }
                 }
                 
-                if self.buf.len() < mem::size_of::<Socks5::MethodSelectRequest>() {
+                if self.buf.len() < mem::size_of::<MethodSelectRequest>() {
                     return Ok(Asnyc::NotReady);
                 }
                 
-                if self.buf.get_unchecked(0) != Socks5::SOCKS5_VERSION {
+                if self.buf.get_unchecked(0) != SOCKS5_VERSION {
                     self.local.shutdown(ShutDown::Both);
                     return Ok(Async::Ready(self.buf.amt));
                 }
 
-                let nmethods = unsafe {self.buf.get_unchecked(1) }
-                let method_len = nmethods + mem::size_of::<Socks5::MethodSelectRequest>() - 1;
+                let nmethods = unsafe {self.buf.get_unchecked(1) };
+                let method_len = nmethods + mem::size_of::<MethodSelectRequest>() - 1;
                 if self.buf.len() < method_len {
                     return Ok(Asnyc::NotReady);
                 }
 
-                let mut resp = Socks5::MethodSelectResponse::new();
-                for idx in (1..nmethods) {
+                let mut resp = MethodSelectResponse::new();
+                for idx in 1..nmethods {
                     if unsafe {self.buf.get_unchecked(1+idx)} == Method::NoAuthRequired {
                         resp.method = Method::NoAuthRequired;
                         break;
@@ -189,17 +194,18 @@ impl Future for Transfer {
 
                 if resp.method != Method::NoAuthRequired {
                     self.local.shutdown(ShutDown::Both);
-                    reutrn Ok(Async::Ready(self.buf.amt));
+
+                    return Ok(Async::Ready(self.buf.amt));
                 }
                 
                 let bytes: &[u8] = unsafe {
                     slice::from_raw_parts(
-                        (&resp as *const Socks5::MethodSelectResponse) as *const u8,
-                        mem::size_of::<Socks5::MethodSelectResponse>())
-                }
+                        (&resp as *const MethodSelectResponse) as *const u8,
+                        mem::size_of::<MethodSelectResponse>())
+                };
 
                 self.local.write_all(bytes);
-                phase = Socks5::Handshake;
+                self.phase = Socks5Phase::Handshake;
                 if method_len < self.buf.len() {
                     unsafe {
                         ptr::copy(self.buf.as_mut_ptr(),  
@@ -216,7 +222,7 @@ impl Future for Transfer {
                 Ok(Async::NotReady)
             }
             
-            Socks5::Handshake => {
+            Handshake => {
                 self.local_handshake()
             }
         }
