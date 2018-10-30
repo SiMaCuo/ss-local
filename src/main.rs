@@ -1,5 +1,11 @@
 extern crate tokio;
 extern crate bytes;
+extern crate futures;
+extern crate mio;
+extern crate libc;
+
+pub mod socks5;
+pub mod trans;
 
 use tokio::net::TcpListener;
 use tokio::prelude::*;

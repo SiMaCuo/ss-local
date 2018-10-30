@@ -57,7 +57,7 @@ impl MethodSelectRequest {
 #[repr(C, packed)]
 pub struct MethodSelectResponse {
     ver: u8,
-    method: u8,
+    pub method: u8,
 }
 
 impl MethodSelectResponse {
@@ -91,7 +91,7 @@ impl Request {
 #[repr(C, packed)]
 pub struct Response {
     ver: u8,
-    rep: u8,
+    pub rep: u8,
     rsv: u8,
     atyp: u8,
 }
