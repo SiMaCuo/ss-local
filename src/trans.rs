@@ -10,7 +10,7 @@ const BUF_SIZE: usize = 2048;
 
 pub struct Transfer {
     local: TcpStream,
-    remote: TcpStream,
+    remote: Option<TcpStream>,
     buf: Vec<u8>,
     idx: usize,
     amt: usize,
@@ -22,7 +22,7 @@ impl Transfer {
     {
         Transfer {
             local,
-            remote: unsafe { mem::uninitialized() },
+            remote: None,
             buf: Vec::with_capacity(BUF_SIZE),
             idx: 0,
             amt: 0,
@@ -155,7 +155,7 @@ impl Future for Transfer {
                             self.amt += n;
                         }
 
-                        Err(err) if err == ErrorKind::Interrupted => {
+                        Err(err) if err.kind() == ErrorKind::Interrupted => {
                             return Ok(Async::NotReady);
                         }
 
