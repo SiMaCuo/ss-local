@@ -1,32 +1,31 @@
-use tokio::net::TcpStream;
-use tokio::io::ErrorKind;
-use tokio::prelude::*;
-use mio::Ready;
+use mio::{self, Ready, TcpStream}
 use futures::future::Future;
 use std::{io, mem, slice, ptr, net};
 use super::socks5::*;
 
 const BUF_SIZE: usize = 2048;
 
-pub struct Transfer {
+pub struct Connection {
     local: TcpStream,
+    lo_buf: [0u8; BUF_SIZE],
+    lo_idx: usize,
+    lo_intrest: Ready,
     remote: Option<TcpStream>,
-    buf: Vec<u8>,
-    idx: usize,
-    amt: usize,
-    phase: Socks5Phase,
+    re_buf: [0u8; BUF_SIZE],
+    re_idx: usize,
+    re_intrest: Ready,
 }
 
-impl Transfer {
+impl Connection {
     pub fn new(local: TcpStream) -> Self 
     {
-        Transfer {
+        Connection {
             local,
+            lo_idx: 0,
+            lo_intrest: Ready::empty(),
             remote: None,
-            buf: Vec::with_capacity(BUF_SIZE),
-            idx: 0,
-            amt: 0,
-            phase: Socks5Phase::Initialize,
+            re_idx: 0,
+            re_intrest: Ready::empty(),
         }
     }
 
@@ -126,11 +125,11 @@ impl Transfer {
     }
 }
 
-impl Future for Transfer {
+impl Future for Connection {
     type Item = usize;
     type Error = io::Error;
 
-    fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error>
+    fn poll(&mut self) -> Poll<usize, io::Error>
     {
         match self.phase {
             Socks5Phase::Initialize => {

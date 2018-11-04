@@ -1,15 +1,9 @@
-extern crate tokio;
-extern crate bytes;
-extern crate futures;
 extern crate mio;
-extern crate libc;
 
 pub mod socks5;
 pub mod trans;
+pub mod server;
 
-use tokio::net::TcpListener;
-use tokio::prelude::*;
-use trans::Transfer;
 
 fn main() {
     let addr = "127.0.0.1:18109".parse().unwrap();
@@ -36,7 +30,7 @@ fn main() {
                     }
                 }
 
-                Ok(0)
+                future::ok::<(), ()>(())
             });
 
             tokio::spawn(t);
