@@ -1,8 +1,8 @@
 extern crate mio;
 
 pub mod socks5;
-pub mod trans;
-pub mod server;
+pub mod conn;
+pub mod service;
 
 
 fn main() {

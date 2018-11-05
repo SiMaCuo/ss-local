@@ -1,6 +1,7 @@
 pub const SOCKS5_VERSION: u8 = 5;
 
-pub enum Socks5Phase {
+#[derive(Debug)]
+pub enum Stage {
     Initialize,
     Handshake,
     Http,

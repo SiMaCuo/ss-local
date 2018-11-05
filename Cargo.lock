@@ -106,6 +106,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 name = "ss-local"
 version = "0.1.0"
 dependencies = [
+ "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "mio 0.6.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "slab 0.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]

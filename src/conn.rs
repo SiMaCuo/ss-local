@@ -1,32 +1,73 @@
-use mio::{self, Ready, TcpStream}
-use futures::future::Future;
+use mio::{self, Ready, Token};
+use mio::net::TcpStream;
 use std::{io, mem, slice, ptr, net};
 use super::socks5::*;
 
 const BUF_SIZE: usize = 2048;
+const LOCAL: bool     = true;
+const REMOTE: bool    = false;
 
 pub struct Connection {
     local: TcpStream,
-    lo_buf: [0u8; BUF_SIZE],
-    lo_idx: usize,
-    lo_intrest: Ready,
+    local_token: Token,
+    local_buf: [0u8; BUF_SIZE]
+    local_buf_idx: usize,
+    local_intrest: Ready,
     remote: Option<TcpStream>,
-    re_buf: [0u8; BUF_SIZE],
-    re_idx: usize,
-    re_intrest: Ready,
+    remote_token: Option<Token>,
+    remote_buf: [0u8; BUF_SIZE],
+    remote_idx: usize,
+    remote_intrest: Ready,
+    stage: Stage,
 }
 
 impl Connection {
-    pub fn new(local: TcpStream) -> Self 
+    pub fn new(local: TcpStream, local_token: Token) -> Self 
     {
         Connection {
             local,
-            lo_idx: 0,
-            lo_intrest: Ready::empty(),
+            local_token,
+            local_buf_idx: 0,
+            local_intrest: Ready::empty(),
             remote: None,
-            re_idx: 0,
-            re_intrest: Ready::empty(),
+            remote_token: None,
+            remote_buf_idx: 0,
+            remote_intrest: Ready::empty(),
+            stage: Initialize,
         }
+    }
+
+    fn get_stream(&self, is_local_stream: bool) -> &TcpStream 
+    {
+        if is_local_stream {
+            self.local
+        } else {
+            self.remote.unwrap()?
+        }
+    }
+
+    pub fn register(&self, &mut poll: Poll, token: Token, ready: Ready, is_local_stream: bool, is_reregister: bool) -> Result<()>
+    {
+        let token = if is_local_stream {
+            self.local_token
+        } else {
+            self.remote_token
+        };
+
+        let opt = mio::PollOpt::edge();
+        let result = if is_reregister {
+            poll.reregister(self.get_stream(is_local_stream), token, ready, opt)
+        } else {
+            poll.register(self.get_stream(is_local_stream, token, ready, opt))
+        };
+
+        result.map(|_| {
+            println!("{} {} between ({:?} {:?}) <--> {:?}",
+                if is_reregister { "RE-register" } else { "register" },
+                if is_local_stream { "LOCAL" } else { "REMOTE" },
+                self.local.peer_addr()?, self.local.local_addr()?,
+                self.remote.unwrap().local_addr()?);
+        })
     }
 
     fn local_handshake(&mut self) -> Result<Async<usize>, io::Error> 
@@ -123,6 +164,8 @@ impl Connection {
 
         Ok(Async::NotReady)
     }
+
+    fn handle_events()
 }
 
 impl Future for Connection {
