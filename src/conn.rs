@@ -1,21 +1,113 @@
 use mio::{self, Ready, Token};
 use mio::net::TcpStream;
-use std::{io, mem, slice, ptr, net};
+use std::{mem, slice, ptr, net};
+use std::io::{Read, Write, Error, ErrorKind};
+use std::ops::{Bound::*, RangeBounds};
 use super::socks5::*;
 
 const BUF_SIZE: usize = 2048;
 const LOCAL: bool     = true;
 const REMOTE: bool    = false;
 
+struct StreamBuf {
+    buf: [u8; BUF_SIZE],
+    idx: usize,
+    end: usize,
+}
+
+impl StreamBuf {
+    fn data_len(&self) -> usize {
+        self.end - self.idx
+    }
+
+    fn move_data(&mut self)
+    {
+        assert!(self.idx <= self.end);
+
+        if self.end == 0 {
+            return;
+        }
+
+        if self.data_len() == 0 {
+            self.idx = 0;
+            self.end = 0;
+
+            return;
+        }
+
+        unsafe {
+            ptr::copy((&self.buf).add(self.idx), &mut self.buf, self.data_len());
+        }
+    }
+
+    fn drian<R>(&mut self, range: R) -> Result<()>
+        where R: RangeBounds<usize>
+    {
+        let start = match range.start_bound() {
+            Included(&n) => self.idx + n,
+            Excluded(&n) => self.idx + n + 1,
+            Unbounded    => self.idx,
+        };
+
+        let end = match range.end_bound() {
+            Included(&n) => self.idx + n + 1,
+            Excluded(&n) => self.idx + n,
+            Unbounded    => self.end,
+        };
+
+        assert!(start <= end);
+        assert!(end <= end);
+
+        if end - start == self.data_len() {
+            self.idx = 0;
+            self.end = 0;
+        } 
+
+        unsafe {
+            ptr::copy((&self.buf).add(self.idx), &mut self.buf, self.data_len());
+        }
+
+        Ok(())
+    }
+
+
+    pub fn write<W: Write>(&mut self, &mut w: W) -> Result<usize>
+    {
+        let buf_len = self.len - self.idx;
+        if buf_len == 0 {
+            return Error::new(ErrorKind::WriteZero, "buffer is empty, nothing to write.");
+        }
+
+        let result = w.write(self.buf[self.idx..self.len]);
+        match result {
+            Ok(n) if n != 0 => {
+                self.idx += n;
+                Ok(n)
+            }
+
+            Ok(_) => {
+                Error::new(ErrorKind::WriteZero, "can't write to target.");
+            }
+
+            Err(e) => result
+        }
+    }
+
+    pub fn read<R: Read>(&mut self, &mut r: R) -> Result<usize>
+    {
+        
+    }
+}
+
 pub struct Connection {
     local: TcpStream,
     local_token: Token,
-    local_buf: [0u8; BUF_SIZE]
+    local_buf: [u8; BUF_SIZE],
     local_buf_idx: usize,
     local_intrest: Ready,
     remote: Option<TcpStream>,
     remote_token: Option<Token>,
-    remote_buf: [0u8; BUF_SIZE],
+    remote_buf: [u8; BUF_SIZE],
     remote_idx: usize,
     remote_intrest: Ready,
     stage: Stage,
