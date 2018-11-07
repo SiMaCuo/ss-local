@@ -1,13 +1,11 @@
-use mio::{self, Ready, Token};
+use mio::{self, Ready, Token, Poll, PollOpt};
 use mio::net::TcpStream;
-use std::{mem, slice, ptr, net};
+use std::{mem, slice, ptr, net, result::Result};
 use std::io::{Read, Write, Error, ErrorKind};
-use std::ops::{Bound::*, RangeBounds};
 use super::socks5::*;
 
 
 const BUF_ALLOC_SIZE: usize = 4096;
-const MAX_READ_SIZE:  usize = 4*4096;
 const MIN_TAIL_SIZE:  usize = 512;
 const LOCAL: bool     = true;
 const REMOTE: bool    = false;
@@ -49,14 +47,14 @@ impl StreamBuf {
         }
     }
 
-    pub fn write_to<W: Write>(&mut self, &mut w: W) -> Result<usize>
+    pub fn write_to<W: Write>(&mut self, w: &mut W) -> Result<usize>
     {
         let buf_len = self.buf.len() - self.pos;
         if buf_len == 0 {
-            return Error::new(ErrorKind::WriteZero, "buffer is empty, nothing to write.");
+            return Err(Error::new(ErrorKind::WriteZero, "buffer is empty, nothing to write."));
         }
 
-        let result = w.write(self.buf[self.pos..self.buf.len()]);
+        let result = w.write(&self.buf[self.pos..self.buf.len()]);
         match result {
             Ok(n) if n != 0 => {
                 self.pos += n;
@@ -69,14 +67,14 @@ impl StreamBuf {
             }
 
             Ok(_) => {
-                Error::new(ErrorKind::WriteZero, "can't write to target.");
+                Err(Error::new(ErrorKind::WriteZero, "can't write to target."))
             }
 
             Err(e) => result
         }
     }
 
-    pub fn read_from<R: Read>(&mut self, &mut r: R) -> Result<usize>
+    pub fn read_from<R: Read>(&mut self, r: &mut R) -> Result<usize>
     {
         let total_read_len: usize = 0;
         loop {
@@ -96,20 +94,26 @@ impl StreamBuf {
                 self.buf.reserve(BUF_ALLOC_SIZE);
             }
             
-            let result = 
-
+            let space_len = self.buf.capacity() - self.buf.len();
+            let result = r.read(&mut self.buf[self.buf.len()..self.buf.capacity()]);
+            match result {
+                Ok(n) if n > 0 => { total_read_len += n; }
+                Ok(_)  => { Ok(total_read_len); }
+                Err(e) => { result }
+            }
+        }
     }
 }
 
 pub struct Connection {
     local: TcpStream,
     local_token: Token,
-    local_buf: [u8; BUF_SIZE],
+    local_buf: [u8; BUF_ALLOC_SIZE],
     local_buf_pos: usize,
     local_intrest: Ready,
     remote: Option<TcpStream>,
     remote_token: Option<Token>,
-    remote_buf: [u8; BUF_SIZE],
+    remote_buf: [u8; BUF_ALLOC_SIZE],
     remote_pos: usize,
     remote_intrest: Ready,
     stage: Stage,
@@ -280,8 +284,8 @@ impl Future for Connection {
                     return Ok(Async::NotReady);
                 }
 
-                if BUF_SIZE > self.buf.len() {
-                    match self.local.read(&mut self.buf[self.buf.len()..BUF_SIZE]) {
+                if BUF_ALLOC_SIZE > self.buf.len() {
+                    match self.local.read(&mut self.buf[self.buf.len()..BUF_ALLOC_SIZE]) {
                         Ok(n) => {
                             if n == 0 {
                                 self.local.shutdown(net::Shutdown::Both);
