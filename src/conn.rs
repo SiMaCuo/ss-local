@@ -6,7 +6,7 @@ use super::socks5::*;
 
 
 const BUF_ALLOC_SIZE: usize = 4096;
-const MIN_TAIL_SIZE:  usize = 512;
+const MIN_VACANT_SIZE:  usize = 512;
 const LOCAL: bool     = true;
 const REMOTE: bool    = false;
 
@@ -16,15 +16,30 @@ struct StreamBuf {
 }
 
 impl StreamBuf {
+    pub fn new() -> StreamBuf {
+        StreamBuf {
+            buf: Vec::with_capacity(BUF_ALLOC_SIZE),
+            pos: 0,
+        }
+    }
+
     fn payload_len(&self) -> usize {
         self.buf.len() - self.pos
+    }
+
+    fn tail_vacant_len(&self) -> usize {
+        self.buf.capacity() - self.buf.len()
+    }
+
+    fn head_vacant_len(&self) -> usize {
+        self.pos
     }
 
     fn move_payload(&mut self)
     {
         assert!(self.pos <= self.buf.len());
 
-        if self.buf.len() == 0 {
+        if self.pos == 0 || self.buf.len() == 0 {
             return;
         }
 
@@ -35,30 +50,31 @@ impl StreamBuf {
             return;
         }
 
+        let len = self.payload_len();
+        let src: *const u8 = self.buf.as_ptr().add(self.pos);
+        let dst: *mut u8 = self.buf.as_mut_ptr();
         unsafe {
-            let len = self.payload_len();
-            let src: *const u8 = self.buf.as_ptr().add(self.pos);
-            let dst: *mut u8 = self.buf.as_mut_ptr();
             if len < self.pos {
                 ptr::copy_nonoverlapping(src, dst, len);
             } else {
                 ptr::copy(src, dst, len);
             }
+            self.buf.set_len(len);
         }
+        self.pos = 0;
     }
 
     pub fn write_to<W: Write>(&mut self, w: &mut W) -> Result<usize>
     {
-        let buf_len = self.buf.len() - self.pos;
-        if buf_len == 0 {
-            return Err(Error::new(ErrorKind::WriteZero, "buffer is empty, nothing to write."));
+        if self.payload_len() == 0 {
+            return Err(Error::new(ErrorKind::WriteZero, "data buffer is empty."));
         }
 
         let result = w.write(&self.buf[self.pos..self.buf.len()]);
         match result {
             Ok(n) if n != 0 => {
                 self.pos += n;
-                if self.pos == self.buf.len() {
+                if self.payload_len() == 0 {
                     self.pos = 0;
                     unsafe { self.buf.set_len(0); }
                 }
@@ -78,23 +94,15 @@ impl StreamBuf {
     {
         let total_read_len: usize = 0;
         loop {
-            let mut tail_len = self.buf.capacity() - self.buf.len();
-            if tail_len + self.pos < MIN_TAIL_SIZE {
+            let mut vacant_len = self.head_vacant_len() + self.tail_vacant_len();
+            if vacant_len < MIN_VACANT_SIZE {
                 if self.pos > 0 {
-                    let src: * const u8 = self.buf.as_ptr().add(self.pos);
-                    let dst: * mut u8 = self.buf.as_mut_ptr();
-                    let len = self.payload_len();
-                    unsafe {
-                        ptr::copy(src, dst, len);
-                        self.buf.set_len(len);
-                    }
-                    self.pos = 0;
+                    self.move_payload();
                 }
 
                 self.buf.reserve(BUF_ALLOC_SIZE);
             }
             
-            let space_len = self.buf.capacity() - self.buf.len();
             let result = r.read(&mut self.buf[self.buf.len()..self.buf.capacity()]);
             match result {
                 Ok(n) if n > 0 => { total_read_len += n; }
@@ -108,13 +116,11 @@ impl StreamBuf {
 pub struct Connection {
     local: TcpStream,
     local_token: Token,
-    local_buf: [u8; BUF_ALLOC_SIZE],
-    local_buf_pos: usize,
+    local_buf: StreamBuf,
     local_intrest: Ready,
     remote: Option<TcpStream>,
     remote_token: Option<Token>,
-    remote_buf: [u8; BUF_ALLOC_SIZE],
-    remote_pos: usize,
+    remote_buf: StreamBuf,
     remote_intrest: Ready,
     stage: Stage,
 }
@@ -125,11 +131,11 @@ impl Connection {
         Connection {
             local,
             local_token,
-            local_buf_pos: 0,
+            local_buf: StreamBuf::new(),
             local_intrest: Ready::empty(),
             remote: None,
             remote_token: None,
-            remote_buf_pos: 0,
+            remote_buf: StreamBuf::new(),
             remote_intrest: Ready::empty(),
             stage: Initialize,
         }
