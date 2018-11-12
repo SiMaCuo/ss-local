@@ -1,7 +1,7 @@
 use mio::{self, Ready, Token, Poll, PollOpt};
 use mio::net::TcpStream;
-use std::{mem, slice, ptr, net, result::Result};
-use std::io::{Read, Write, Error, ErrorKind};
+use std::{cmp, mem, slice, ptr, net};
+use std::io::{self, Read, Write, Error, ErrorKind};
 use super::socks5::*;
 
 
@@ -23,7 +23,7 @@ impl StreamBuf {
         }
     }
 
-    fn payload_len(&self) -> usize {
+    pub fn payload_len(&self) -> usize {
         self.buf.len() - self.pos
     }
 
@@ -35,8 +35,11 @@ impl StreamBuf {
         self.pos
     }
 
-    fn move_payload(&mut self)
-    {
+    fn vacant_len(&self) -> usize {
+        self.tail_vacant_len() + self.head_vacant_len()
+    }
+
+    fn move_payload(&mut self) {
         assert!(self.pos <= self.buf.len());
 
         if self.pos == 0 || self.buf.len() == 0 {
@@ -51,8 +54,8 @@ impl StreamBuf {
         }
 
         let len = self.payload_len();
-        let src: *const u8 = self.buf.as_ptr().add(self.pos);
-        let dst: *mut u8 = self.buf.as_mut_ptr();
+        let src = self.buf.as_ptr().add(self.pos);
+        let dst = self.buf.as_mut_ptr();
         unsafe {
             if len < self.pos {
                 ptr::copy_nonoverlapping(src, dst, len);
@@ -64,8 +67,7 @@ impl StreamBuf {
         self.pos = 0;
     }
 
-    pub fn write_to<W: Write>(&mut self, w: &mut W) -> Result<usize>
-    {
+    pub fn write_to<W: Write>(&mut self, w: &mut W) -> io::Result<usize> {
         if self.payload_len() == 0 {
             return Err(Error::new(ErrorKind::WriteZero, "data buffer is empty."));
         }
@@ -90,13 +92,12 @@ impl StreamBuf {
         }
     }
 
-    pub fn read_from<R: Read>(&mut self, r: &mut R) -> Result<usize>
-    {
+    pub fn read_from<R: Read>(&mut self, r: &mut R) -> io::Result<usize> {
         let total_read_len: usize = 0;
         loop {
-            let mut vacant_len = self.head_vacant_len() + self.tail_vacant_len();
+            let mut vacant_len = self.vacant_len();
             if vacant_len < MIN_VACANT_SIZE {
-                if self.pos > 0 {
+                if self.vacant_len() > 0 {
                     self.move_payload();
                 }
 
@@ -112,6 +113,47 @@ impl StreamBuf {
         }
     }
 }
+
+impl Read for StreamBuf {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let len = cmp::min(buf.len(), self.payload_len());
+
+        let src = self.buf.as_ptr().add(self.pos);
+        let dst = buf.as_mut_ptr();
+        unsafe {
+            ptr::copy_nonoverlapping(src, dst, len);
+        }
+
+        Ok(len)
+    }
+}
+
+impl Write for StreamBuf {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.len() > self.vacant_len() {
+            if self.vacant_len() > 0 {
+                self.move_payload();
+            }
+
+            let mul = buf.len() % BUF_ALLOC_SIZE + 1;
+            self.buf.reserve(mul * BUF_ALLOC_SIZE);
+        } else if buf.len() > self.tail_vacant_len() {
+            self.move_payload();
+        }
+
+        let dst = self.buf.as_mut_ptr().add(self.buf.len());
+        unsafe {
+            ptr::copy_nonoverlapping(buf.as_ptr(), dst, buf.len());
+        }
+
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 
 pub struct Connection {
     local: TcpStream,
@@ -268,8 +310,6 @@ impl Connection {
 
         Ok(Async::NotReady)
     }
-
-    fn handle_events()
 }
 
 impl Future for Connection {
