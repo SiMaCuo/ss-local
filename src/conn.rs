@@ -1,7 +1,7 @@
 use mio::{self, Ready, Token, Poll, PollOpt};
 use mio::net::TcpStream;
 use std::{cmp, mem, slice, ptr, net};
-use std::io::{self, Read, Write, Error, ErrorKind};
+use std::io::{self, Read, Write, Error, ErrorKind::*};
 use super::socks5::*;
 
 
@@ -25,6 +25,44 @@ impl StreamBuf {
 
     pub fn payload_len(&self) -> usize {
         self.buf.len() - self.pos
+    }
+
+    pub fn read_u8(&mut self) -> Result<u8> {
+        if self.payload_len() < 1 {
+            return Err(Error::from(WouldBlock));
+        }
+
+        let mut b = [0u8; 1];
+        self.read_exact(&mut b);
+
+        Ok(b[0])
+    }
+
+    pub fn read_port(&mut self) -> Result<u16> {
+        if self.payload_len() < 2 {
+            return Err(Error::from(WouldBlock));
+        }
+
+        let mut b = [0u8; 2];
+        self.read_exact(&mut b)?;
+        let mut port: u16 = 0;
+        unsafe { ptr::copy_nonoverlapping(b.as_ptr(), &mut port as *mut u16 as *mut u8, 2); }
+
+        Ok(port)
+    }
+
+    pub fn read_addr(&mut self) -> Result<String> {
+    }
+
+
+    fn peek(&mut self, buf: &mut [u8]) -> Result<()> {
+        if buf.len() > self.payload_len() {
+            return Err(Error::from(WouldBlock));
+        }
+
+        Read::read(&self.buf[self.pos..self.pos+buf.len()], buf);
+
+        Ok(())
     }
 
     fn tail_vacant_len(&self) -> usize {
@@ -116,12 +154,11 @@ impl StreamBuf {
 
 impl Read for StreamBuf {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let len = cmp::min(buf.len(), self.payload_len());
-
-        let src = self.buf.as_ptr().add(self.pos);
-        let dst = buf.as_mut_ptr();
-        unsafe {
-            ptr::copy_nonoverlapping(src, dst, len);
+        let len = Read::read(&self.buf[self.head_vacant_len()..self.tail_vacant_len()], buf)?;
+        self.pos += len;
+        if self.pos == self.buf.len() {
+            self.pos = 0;
+            unsafe { self.buf.set_len(0); };
         }
 
         Ok(len)
@@ -141,12 +178,10 @@ impl Write for StreamBuf {
             self.move_payload();
         }
 
-        let dst = self.buf.as_mut_ptr().add(self.buf.len());
-        unsafe {
-            ptr::copy_nonoverlapping(buf.as_ptr(), dst, buf.len());
-        }
+        let len = Write::write(&mut self.buf[self.buf.len()..self.buf.capacity()], buf)?;
+        unsafe { self.buf.set_len(self.buf.len() + len); };
 
-        Ok(buf.len())
+        Ok(len)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -215,17 +250,18 @@ impl Connection {
                 self.remote.unwrap().local_addr()?);
         })
     }
-
-    fn local_handshake(&mut self) -> Result<Async<usize>, io::Error> 
+    
+    
+    fn local_handshake(&mut self) -> Result<usize>
     {
         let buf_len = self.buf.len();
         if buf_len < mem::size_of::<Request>() {
-            return Ok(Async::NotReady);
+            return Err(Error::from(WouldBlock));
         }
         
         let ver = unsafe { *self.buf.get_unchecked(0) };
         if ver != SOCKS5_VERSION {
-            return Ok(Async::Ready(self.amt));
+            return Err(Error::from(InvalidInput));
         }
         
         let mut resp = Response::new();
@@ -238,7 +274,7 @@ impl Connection {
             };
             self.local.write_all(bytes);
 
-            return Ok(Async::Ready(self.amt));
+            return Err(Error::from(InvalidInput));
         }
 
         let atyp: AddrType = unsafe { mem::transmute_copy::<u8, AddrType>(self.buf.get_unchecked(2)) };
@@ -247,7 +283,7 @@ impl Connection {
         match atyp {
             V4 => {
                 if self.buf.len() - request_len < mem::size_of::<net::Ipv4Addr>() + mem::size_of::<u16>() {
-                    return Ok(Async::NotReady);
+                    return Err(Error::from(WouldBlock));
                 }
 
                 let ptr = self.buf.as_ptr();
@@ -266,12 +302,12 @@ impl Connection {
 
             Domain => {
                 if self.buf.len() < request_len + 1 {
-                    return Ok(Async::NotReady);
+                    return Err(Error::from(WouldBlock));
                 }
 
                 let name_len = unsafe { *self.buf.get_unchecked(request_len) as usize };
                 if self.buf.len() < request_len + name_len + 1 {
-                    return Ok(Async::NotReady);
+                    return Err(Error::from(WouldBlock));
                 }
 
                 let name_buf: Vec<u8> = Vec::with_capacity(name_len);
@@ -293,7 +329,7 @@ impl Connection {
                 let addr6_len = mem::size_of::<net::Ipv6Addr>();
                 let port_len = mem::size_of::<u16>();
                 if self.buf.len() < request_len + addr6_len + port_len {
-                    return Ok(Async::NotReady);
+                    return Err(Error::from(WouldBlock));
                 }
                 
                 let mut addr6_bytes: [u8; 16] = unsafe { mem::uninitialized() };
@@ -308,7 +344,7 @@ impl Connection {
             }
         }
 
-        Ok(Async::NotReady)
+        Err(Error::from(WouldBlock))
     }
 }
 
@@ -322,12 +358,12 @@ impl Future for Connection {
             Socks5Phase::Initialize => {
                 let read_ready: Async<Ready> = self.local.poll_read_ready(Ready::readable())?;
                 if read_ready.is_not_ready() {
-                    return Ok(Async::NotReady);
+                    return Err(Error::from(WouldBlock));
                 }
 
                 let write_ready: Async<Ready> = self.local.poll_write_ready()?;
                 if write_ready.is_not_ready() {
-                    return Ok(Async::NotReady);
+                    return Err(Error::from(WouldBlock));
                 }
 
                 if BUF_ALLOC_SIZE > self.buf.len() {
@@ -342,7 +378,7 @@ impl Future for Connection {
                         }
 
                         Err(err) if err.kind() == ErrorKind::Interrupted => {
-                            return Ok(Async::NotReady);
+                            return Err(Error::from(WouldBlock));
                         }
 
                         _ => {
@@ -353,7 +389,7 @@ impl Future for Connection {
                 }
                 
                 if self.buf.len() < mem::size_of::<MethodSelectRequest>() {
-                    return Ok(Async::NotReady);
+                    return Err(Error::from(WouldBlock));
                 }
                 
                 if *self.buf.get_unchecked(0) != SOCKS5_VERSION {
@@ -364,7 +400,7 @@ impl Future for Connection {
                 let nmethods = unsafe { *self.buf.get_unchecked(1) as usize };
                 let method_len = nmethods + mem::size_of::<MethodSelectRequest>() - 1;
                 if self.buf.len() < method_len {
-                    return Ok(Async::NotReady);
+                    return Err(Error::from(WouldBlock));
                 }
 
                 let mut resp = MethodSelectResponse::new();
@@ -402,7 +438,7 @@ impl Future for Connection {
 
                 self.buf.truncate(0);
                 
-                Ok(Async::NotReady)
+                Err(Error::from(WouldBlock))
             }
             
             Handshake => {

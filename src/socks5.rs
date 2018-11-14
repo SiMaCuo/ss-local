@@ -8,64 +8,70 @@ pub enum Stage {
     Streaming,
 }
 
-pub enum Method {
-    NoAuthRequired = 0x00,
-    UnAcceptable = 0xff,
+#[allow(dead_code)]
+pub mod Method {
+    pub const NO_AUTH: u8               = 0x0;
+    pub const GSSAPI: u8                = 0x1;
+    pub const NAME_PASSWORD: u8         = 0x3;
+    pub const NO_ACCEPT_METHOD: u8      = 0xff;
 }
 
-pub enum Command {
-    Connect = 0x01,
-    Bind = 0x02,
-    UdpAssociate = 0x03,
+#[allow(dead_code)]
+pub mod Cmd {
+    pub const CONNECT: u8               = 0x1;
+    pub const BIND: u8                  = 0x2;
+    pub const UDP_ASSOCIATE: u8         = 0x3;
 }
 
-pub enum AddrType {
-    V4 = 0x01,
-    Domain = 0x03,
-    V6 = 0x04,
+#[allow(dead_code)]
+pub mod AddrType {
+    pub const V4: u8                    = 0x1;
+    pub const DOMAIN: u8                = 0x2;
+    pub const V6: u8                    = 0x3;
 }
 
-pub enum Reply {
-    Succeeded = 0x00,
-    GeneralFailure = 0x01,
-    ConnectDisallowed = 0x02,
-    NetwrokkUnreachable = 0x03,
-    HostUnreachable = 0x04,
-    ConnectRefused = 0x05,
-    TTLExpired = 0x06,
-    CmdNotSupported = 0x07,
-    AddrTypeNotSupported = 0x08,
-    Unassigned = 0x09,
+#[allow(dead_code)]
+pub mod Rep {
+    pub const SUCCEEDED: u8             = 0x00;
+    pub const GENERAL_FAILURE: u8       = 0x01;
+    pub const CONNECT_DISALLOWED: u8    = 0x02;
+    pub const NETWORK_UNREACHABLE: u8   = 0x03;
+    pub const HOST_UNREACHABLE: u8      = 0x04;
+    pub const CONNECT_REFUSED: u8       = 0x05;
+    pub const TTL_EXPIRED: u8           = 0x06;
+    pub const CMD_NOT_SUPPORTED: u8     = 0x07;
+    pub const ATYP_NOT_SUPPORTED: u8    = 0x08;
 }
 
-#[repr(C, packed)]
-pub struct MethodSelectRequest {
-    ver: u8,
-    nmethods: u8, 
-    method: u8,
+pub const METHOD_SELECT_HEAD_LEN: usize = 2;
+#[derive(Debug)]
+pub struct MethodSel {
+    pub ver: u8,
+    pub nmethods: u8,
+    pub method: Vec<u8>,
 }
 
-impl MethodSelectRequest {
-    pub fn new()-> Self {
-        MethodSelectRequest {
-            ver: SOCKS5_VERSION,
-            nmethods: 1,
-            method: Method::UnAcceptable as u8
+impl MethodSel {
+    pub fn new() -> Self {
+        MethodSel {
+            ver: 0xff,
+            nmethods: 0,
+            method: Vec::with_capacity(16);
         }
     }
 }
 
 #[repr(C, packed)]
-pub struct MethodSelectResponse {
-    ver: u8,
+pub struct MethodSelReply {
+    pub ver: u8,
     pub method: u8,
 }
 
-impl MethodSelectResponse {
+impl MethodSelReply {
     pub fn new() -> Self {
-        MethodSelectResponse {
+        MethodSelReply {
             ver: SOCKS5_VERSION,
-            method: Method::UnAcceptable as u8,
+            method: Method::NO_ACCEPT_METHOD,
         }
     }
 }
