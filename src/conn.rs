@@ -107,7 +107,7 @@ impl StreamBuf {
 
     pub fn write_to<W: Write>(&mut self, w: &mut W) -> io::Result<usize> {
         if self.payload_len() == 0 {
-            return Err(Error::new(ErrorKind::WriteZero, "data buffer is empty."));
+            return Err(Error::new(WriteZero, "data buffer is empty."));
         }
 
         let result = w.write(&self.buf[self.pos..self.buf.len()]);
@@ -123,7 +123,7 @@ impl StreamBuf {
             }
 
             Ok(_) => {
-                Err(Error::new(ErrorKind::WriteZero, "can't write to target."))
+                Err(Error::new(WriteZero, "can't write to target."))
             }
 
             Err(e) => result
@@ -214,7 +214,7 @@ impl Connection {
             remote_token: None,
             remote_buf: StreamBuf::new(),
             remote_intrest: Ready::empty(),
-            stage: Initialize,
+            stage: Stage::Initialize,
         }
     }
 
@@ -355,7 +355,7 @@ impl Future for Connection {
     fn poll(&mut self) -> Poll<usize, io::Error>
     {
         match self.phase {
-            Socks5Phase::Initialize => {
+            Stage::Initialize => {
                 let read_ready: Async<Ready> = self.local.poll_read_ready(Ready::readable())?;
                 if read_ready.is_not_ready() {
                     return Err(Error::from(WouldBlock));
@@ -377,7 +377,7 @@ impl Future for Connection {
                             self.amt += n;
                         }
 
-                        Err(err) if err.kind() == ErrorKind::Interrupted => {
+                        Err(err) if err.kind() == Interrupted => {
                             return Err(Error::from(WouldBlock));
                         }
 
@@ -424,7 +424,7 @@ impl Future for Connection {
                 };
 
                 self.local.write_all(bytes);
-                self.phase = Socks5Phase::Handshake;
+                self.phase = Stage::Handshake;
                 if method_len < self.buf.len() {
                     unsafe {
                         ptr::copy(self.buf.as_ptr().offset(method_len as isize),

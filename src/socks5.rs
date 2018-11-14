@@ -56,7 +56,7 @@ impl MethodSel {
         MethodSel {
             ver: 0xff,
             nmethods: 0,
-            method: Vec::with_capacity(16);
+            method: Vec::with_capacity(16),
         }
     }
 }
