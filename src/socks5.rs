@@ -15,6 +15,7 @@ pub mod Method {
     pub const NAME_PASSWORD: u8         = 0x3;
     pub const NO_ACCEPT_METHOD: u8      = 0xff;
 }
+use self::Method::*;
 
 #[allow(dead_code)]
 pub mod Cmd {
@@ -22,6 +23,7 @@ pub mod Cmd {
     pub const BIND: u8                  = 0x2;
     pub const UDP_ASSOCIATE: u8         = 0x3;
 }
+use self::Cmd::*;
 
 #[allow(dead_code)]
 pub mod AddrType {
@@ -29,6 +31,7 @@ pub mod AddrType {
     pub const DOMAIN: u8                = 0x2;
     pub const V6: u8                    = 0x3;
 }
+use self::AddrType::*;
 
 #[allow(dead_code)]
 pub mod Rep {
@@ -42,6 +45,7 @@ pub mod Rep {
     pub const CMD_NOT_SUPPORTED: u8     = 0x07;
     pub const ATYP_NOT_SUPPORTED: u8    = 0x08;
 }
+use self::Rep::*;
 
 pub const METHOD_SELECT_HEAD_LEN: usize = 2;
 #[derive(Debug)]
@@ -71,7 +75,7 @@ impl MethodSelReply {
     pub fn new() -> Self {
         MethodSelReply {
             ver: SOCKS5_VERSION,
-            method: Method::NO_ACCEPT_METHOD,
+            method: NO_ACCEPT_METHOD,
         }
     }
 }
@@ -107,9 +111,9 @@ impl Response {
     pub fn new() -> Self {
         Response {
             ver: SOCKS5_VERSION,
-            rep: Reply::Succeeded as u8,
+            rep: SUCCEEDED,
             rsv: 0,
-            atyp: AddrType::V4 as u8,
+            atyp: V4,
         }
     }
 }

@@ -1,4 +1,6 @@
 extern crate mio;
+extern crate slab;
+
 
 pub mod socks5;
 pub mod conn;
@@ -6,9 +8,6 @@ pub mod service;
 
 
 fn main() {
-    let addr = "127.0.0.1:18109".parse().unwrap();
-    let listener = TcpListener::bind(&addr).unwrap();
-    println!("Listening on: {}", addr);
 
     let server = listener.incoming()
         .for_each(|stream| {

@@ -1,14 +1,15 @@
-use mio::{self, Ready, Token, Poll, PollOpt};
-use mio::net::TcpStream;
-use std::{cmp, mem, slice, ptr, net};
-use std::io::{self, Read, Write, Error, ErrorKind::*};
 use super::socks5::*;
-
+use mio::net::TcpStream;
+use mio::{self, Poll, PollOpt, Ready, Token};
+use std::io::{self, Error, ErrorKind::*, Read, Write};
+use std::{cmp, mem, net, ptr, slice};
 
 const BUF_ALLOC_SIZE: usize = 4096;
-const MIN_VACANT_SIZE:  usize = 512;
-const LOCAL: bool     = true;
-const REMOTE: bool    = false;
+const MIN_VACANT_SIZE: usize = 512;
+pub const LOCAL: bool = true;
+pub const REMOTE: bool = false;
+pub const REREGISTER: bool = true;
+pub const REGISTER: bool = false;
 
 struct StreamBuf {
     buf: Vec<u8>,
@@ -46,21 +47,23 @@ impl StreamBuf {
         let mut b = [0u8; 2];
         self.read_exact(&mut b)?;
         let mut port: u16 = 0;
-        unsafe { ptr::copy_nonoverlapping(b.as_ptr(), &mut port as *mut u16 as *mut u8, 2); }
+        unsafe {
+            ptr::copy_nonoverlapping(b.as_ptr(), &mut port as *mut u16 as *mut u8, 2);
+        }
 
         Ok(port)
     }
 
     pub fn read_addr(&mut self) -> Result<String> {
+        Ok("xyz".to_string())
     }
-
 
     fn peek(&mut self, buf: &mut [u8]) -> Result<()> {
         if buf.len() > self.payload_len() {
             return Err(Error::from(WouldBlock));
         }
 
-        Read::read(&self.buf[self.pos..self.pos+buf.len()], buf);
+        Read::read(&self.buf[self.pos..self.pos + buf.len()], buf);
 
         Ok(())
     }
@@ -86,7 +89,9 @@ impl StreamBuf {
 
         if self.payload_len() == 0 {
             self.pos = 0;
-            unsafe { self.buf.set_len(0); }
+            unsafe {
+                self.buf.set_len(0);
+            }
 
             return;
         }
@@ -116,17 +121,17 @@ impl StreamBuf {
                 self.pos += n;
                 if self.payload_len() == 0 {
                     self.pos = 0;
-                    unsafe { self.buf.set_len(0); }
+                    unsafe {
+                        self.buf.set_len(0);
+                    }
                 }
 
                 Ok(n)
             }
 
-            Ok(_) => {
-                Err(Error::new(WriteZero, "can't write to target."))
-            }
+            Ok(_) => Err(Error::new(WriteZero, "can't write to target.")),
 
-            Err(e) => result
+            Err(e) => result,
         }
     }
 
@@ -141,12 +146,16 @@ impl StreamBuf {
 
                 self.buf.reserve(BUF_ALLOC_SIZE);
             }
-            
+
             let result = r.read(&mut self.buf[self.buf.len()..self.buf.capacity()]);
             match result {
-                Ok(n) if n > 0 => { total_read_len += n; }
-                Ok(_)  => { Ok(total_read_len); }
-                Err(e) => { result }
+                Ok(n) if n > 0 => {
+                    total_read_len += n;
+                }
+                Ok(_) => {
+                    Ok(total_read_len);
+                }
+                Err(e) => result,
             }
         }
     }
@@ -154,11 +163,16 @@ impl StreamBuf {
 
 impl Read for StreamBuf {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let len = Read::read(&self.buf[self.head_vacant_len()..self.tail_vacant_len()], buf)?;
+        let len = Read::read(
+            &self.buf[self.head_vacant_len()..self.tail_vacant_len()],
+            buf,
+        )?;
         self.pos += len;
         if self.pos == self.buf.len() {
             self.pos = 0;
-            unsafe { self.buf.set_len(0); };
+            unsafe {
+                self.buf.set_len(0);
+            };
         }
 
         Ok(len)
@@ -179,7 +193,9 @@ impl Write for StreamBuf {
         }
 
         let len = Write::write(&mut self.buf[self.buf.len()..self.buf.capacity()], buf)?;
-        unsafe { self.buf.set_len(self.buf.len() + len); };
+        unsafe {
+            self.buf.set_len(self.buf.len() + len);
+        };
 
         Ok(len)
     }
@@ -189,22 +205,21 @@ impl Write for StreamBuf {
     }
 }
 
-
 pub struct Connection {
+    pub local_token: Token,
+    pub remote_token: Option<Token>,
+
     local: TcpStream,
-    local_token: Token,
     local_buf: StreamBuf,
     local_intrest: Ready,
     remote: Option<TcpStream>,
-    remote_token: Option<Token>,
     remote_buf: StreamBuf,
     remote_intrest: Ready,
     stage: Stage,
 }
 
 impl Connection {
-    pub fn new(local: TcpStream, local_token: Token) -> Self 
-    {
+    pub fn new(local: TcpStream, local_token: Token) -> Self {
         Connection {
             local,
             local_token,
@@ -218,8 +233,7 @@ impl Connection {
         }
     }
 
-    fn get_stream(&self, is_local_stream: bool) -> &TcpStream 
-    {
+    fn get_stream(&self, is_local_stream: bool) -> &TcpStream {
         if is_local_stream {
             self.local
         } else {
@@ -227,8 +241,14 @@ impl Connection {
         }
     }
 
-    pub fn register(&self, &mut poll: Poll, token: Token, ready: Ready, is_local_stream: bool, is_reregister: bool) -> Result<()>
-    {
+    pub fn register(
+        &self,
+        &mut poll: Poll,
+        token: Token,
+        ready: Ready,
+        is_local_stream: bool,
+        is_reregister: bool,
+    ) -> Result<()> {
         let token = if is_local_stream {
             self.local_token
         } else {
@@ -243,61 +263,70 @@ impl Connection {
         };
 
         result.map(|_| {
-            println!("{} {} between ({:?} {:?}) <--> {:?}",
-                if is_reregister { "RE-register" } else { "register" },
+            println!(
+                "{} {} between ({:?} {:?}) <--> {:?}",
+                if is_reregister {
+                    "RE-register"
+                } else {
+                    "register"
+                },
                 if is_local_stream { "LOCAL" } else { "REMOTE" },
-                self.local.peer_addr()?, self.local.local_addr()?,
-                self.remote.unwrap().local_addr()?);
+                self.local.peer_addr()?,
+                self.local.local_addr()?,
+                self.remote.unwrap().local_addr()?
+            );
         })
     }
-    
-    
-    fn local_handshake(&mut self) -> Result<usize>
-    {
+
+    fn local_handshake(&mut self) -> Result<usize> {
         let buf_len = self.buf.len();
         if buf_len < mem::size_of::<Request>() {
             return Err(Error::from(WouldBlock));
         }
-        
+
         let ver = unsafe { *self.buf.get_unchecked(0) };
         if ver != SOCKS5_VERSION {
             return Err(Error::from(InvalidInput));
         }
-        
+
         let mut resp = Response::new();
         let cmd = unsafe { *self.buf.get_unchecked(1) };
         if cmd != Command::Connect as u8 {
             resp.rep = Reply::CmdNotSupported as u8;
-            let bytes: &[u8] = unsafe { slice::from_raw_parts(
+            let bytes: &[u8] = unsafe {
+                slice::from_raw_parts(
                     (&resp as *const Response) as *const u8,
-                    mem::size_of::<Response>())
+                    mem::size_of::<Response>(),
+                )
             };
             self.local.write_all(bytes);
 
             return Err(Error::from(InvalidInput));
         }
 
-        let atyp: AddrType = unsafe { mem::transmute_copy::<u8, AddrType>(self.buf.get_unchecked(2)) };
-        
+        let atyp: AddrType =
+            unsafe { mem::transmute_copy::<u8, AddrType>(self.buf.get_unchecked(2)) };
+
         let request_len = mem::size_of::<Request>();
         match atyp {
             V4 => {
-                if self.buf.len() - request_len < mem::size_of::<net::Ipv4Addr>() + mem::size_of::<u16>() {
+                if self.buf.len() - request_len
+                    < mem::size_of::<net::Ipv4Addr>() + mem::size_of::<u16>()
+                {
                     return Err(Error::from(WouldBlock));
                 }
 
                 let ptr = self.buf.as_ptr();
-                let ip = net::Ipv4Addr::from( 
-                    unsafe {
-                        let raw: *const u32 = ptr.offset(request_len as isize) as *const u32;
-                        mem::transmute_copy::<u32, u32>(&*raw)
-                    } );
+                let ip = net::Ipv4Addr::from(unsafe {
+                    let raw: *const u32 = ptr.offset(request_len as isize) as *const u32;
+                    mem::transmute_copy::<u32, u32>(&*raw)
+                });
                 let u32_len = mem::size_of::<u32>();
-                let port: u16 = u16::from_be(
-                    unsafe {
-                        let raw: *const u16 = ptr.offset((request_len + u32_len) as isize) as *const u16;
-                        mem::transmute_copy::<u16, u16>(&*raw) }
-                );
+                let port: u16 = u16::from_be(unsafe {
+                    let raw: *const u16 =
+                        ptr.offset((request_len + u32_len) as isize) as *const u16;
+                    mem::transmute_copy::<u16, u16>(&*raw)
+                });
             }
 
             Domain => {
@@ -316,13 +345,13 @@ impl Connection {
                     ptr::copy_nonoverlapping(name_ptr, name_buf.as_mut_ptr(), name_len);
                     name_buf.set_len(name_len);
                 }
-                
-                let port: u16 = u16::from_be(
-                    unsafe {
-                        let ptr = self.buf.as_ptr();
-                        let raw: *const u16 = ptr.offset((request_len+name_len+1) as isize) as *const u16;
-                        *raw
-                    } );
+
+                let port: u16 = u16::from_be(unsafe {
+                    let ptr = self.buf.as_ptr();
+                    let raw: *const u16 =
+                        ptr.offset((request_len + name_len + 1) as isize) as *const u16;
+                    *raw
+                });
             }
 
             V6 => {
@@ -331,16 +360,15 @@ impl Connection {
                 if self.buf.len() < request_len + addr6_len + port_len {
                     return Err(Error::from(WouldBlock));
                 }
-                
+
                 let mut addr6_bytes: [u8; 16] = unsafe { mem::uninitialized() };
-                addr6_bytes.copy_from_slice(&(&self.buf)[request_len..request_len+addr6_len]);
+                addr6_bytes.copy_from_slice(&(&self.buf)[request_len..request_len + addr6_len]);
                 let ip = net::Ipv6Addr::from(addr6_bytes);
-                let port: u16 = u16::from_be(
-                    unsafe {
-                        let ptr = self.buf.as_ptr();
-                        let raw = ptr.offset((request_len+addr6_len) as isize) as *const u16;
-                        *raw
-                    } );
+                let port: u16 = u16::from_be(unsafe {
+                    let ptr = self.buf.as_ptr();
+                    let raw = ptr.offset((request_len + addr6_len) as isize) as *const u16;
+                    *raw
+                });
             }
         }
 
@@ -352,8 +380,7 @@ impl Future for Connection {
     type Item = usize;
     type Error = io::Error;
 
-    fn poll(&mut self) -> Poll<usize, io::Error>
-    {
+    fn poll(&mut self) -> Poll<usize, io::Error> {
         match self.phase {
             Stage::Initialize => {
                 let read_ready: Async<Ready> = self.local.poll_read_ready(Ready::readable())?;
@@ -367,7 +394,10 @@ impl Future for Connection {
                 }
 
                 if BUF_ALLOC_SIZE > self.buf.len() {
-                    match self.local.read(&mut self.buf[self.buf.len()..BUF_ALLOC_SIZE]) {
+                    match self
+                        .local
+                        .read(&mut self.buf[self.buf.len()..BUF_ALLOC_SIZE])
+                    {
                         Ok(n) => {
                             if n == 0 {
                                 self.local.shutdown(net::Shutdown::Both);
@@ -387,11 +417,11 @@ impl Future for Connection {
                         }
                     }
                 }
-                
+
                 if self.buf.len() < mem::size_of::<MethodSelectRequest>() {
                     return Err(Error::from(WouldBlock));
                 }
-                
+
                 if *self.buf.get_unchecked(0) != SOCKS5_VERSION {
                     self.local.shutdown(net::Shutdown::Both);
                     return Ok(Async::Ready(self.amt));
@@ -405,7 +435,7 @@ impl Future for Connection {
 
                 let mut resp = MethodSelectResponse::new();
                 for pos in 1..nmethods {
-                    if unsafe { *self.buf.get_unchecked(1+pos)} == Method::NoAuthRequired as u8 {
+                    if unsafe { *self.buf.get_unchecked(1 + pos) } == Method::NoAuthRequired as u8 {
                         resp.method = Method::NoAuthRequired as u8;
                         break;
                     }
@@ -416,50 +446,35 @@ impl Future for Connection {
 
                     return Ok(Async::Ready(self.amt));
                 }
-                
+
                 let bytes: &[u8] = unsafe {
                     slice::from_raw_parts(
                         (&resp as *const MethodSelectResponse) as *const u8,
-                        mem::size_of::<MethodSelectResponse>())
+                        mem::size_of::<MethodSelectResponse>(),
+                    )
                 };
 
                 self.local.write_all(bytes);
                 self.phase = Stage::Handshake;
                 if method_len < self.buf.len() {
                     unsafe {
-                        ptr::copy(self.buf.as_ptr().offset(method_len as isize),
-                                  self.buf.as_mut_ptr(),
-                                  self.buf.len() - method_len); 
+                        ptr::copy(
+                            self.buf.as_ptr().offset(method_len as isize),
+                            self.buf.as_mut_ptr(),
+                            self.buf.len() - method_len,
+                        );
                     }
                     self.buf.set_len(self.buf.len() - method_len);
-                    
+
                     //continue;
                 }
 
                 self.buf.truncate(0);
-                
+
                 Err(Error::from(WouldBlock))
             }
-            
-            Handshake => {
-                self.local_handshake()
-            }
-        }
 
+            Handshake => self.local_handshake(),
+        }
     }
 }
-
-
-
-
-                
-                
-
-
-
-
-
-
-
-                
-
