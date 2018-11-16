@@ -2,48 +2,50 @@ pub const SOCKS5_VERSION: u8 = 5;
 
 #[derive(Debug)]
 pub enum Stage {
-    Initialize,
-    Handshake,
+    LocalConnected,
+    WaitSndMethodSelReply,
+    Request,
+    WaitSndReply,
     Http,
     Streaming,
 }
 
 #[allow(dead_code)]
 pub mod Method {
-    pub const NO_AUTH: u8               = 0x0;
-    pub const GSSAPI: u8                = 0x1;
-    pub const NAME_PASSWORD: u8         = 0x3;
-    pub const NO_ACCEPT_METHOD: u8      = 0xff;
+    pub const NO_AUTH: u8 = 0x0;
+    pub const GSSAPI: u8 = 0x1;
+    pub const NAME_PASSWORD: u8 = 0x3;
+    pub const NO_ACCEPT_METHOD: u8 = 0xff;
 }
 use self::Method::*;
 
 #[allow(dead_code)]
 pub mod Cmd {
-    pub const CONNECT: u8               = 0x1;
-    pub const BIND: u8                  = 0x2;
-    pub const UDP_ASSOCIATE: u8         = 0x3;
+    pub const CONNECT: u8 = 0x1;
+    pub const BIND: u8 = 0x2;
+    pub const UDP_ASSOCIATE: u8 = 0x3;
 }
 use self::Cmd::*;
 
 #[allow(dead_code)]
 pub mod AddrType {
-    pub const V4: u8                    = 0x1;
-    pub const DOMAIN: u8                = 0x2;
-    pub const V6: u8                    = 0x3;
+    pub const V4: u8 = 0x1;
+    pub const DOMAIN: u8 = 0x2;
+    pub const V6: u8 = 0x3;
 }
 use self::AddrType::*;
 
 #[allow(dead_code)]
 pub mod Rep {
-    pub const SUCCEEDED: u8             = 0x00;
-    pub const GENERAL_FAILURE: u8       = 0x01;
-    pub const CONNECT_DISALLOWED: u8    = 0x02;
-    pub const NETWORK_UNREACHABLE: u8   = 0x03;
-    pub const HOST_UNREACHABLE: u8      = 0x04;
-    pub const CONNECT_REFUSED: u8       = 0x05;
-    pub const TTL_EXPIRED: u8           = 0x06;
-    pub const CMD_NOT_SUPPORTED: u8     = 0x07;
-    pub const ATYP_NOT_SUPPORTED: u8    = 0x08;
+    pub const SUCCEEDED: u8 = 0x00;
+    pub const GENERAL_FAILURE: u8 = 0x01;
+    pub const CONNECT_DISALLOWED: u8 = 0x02;
+    pub const NETWORK_UNREACHABLE: u8 = 0x03;
+    pub const HOST_UNREACHABLE: u8 = 0x04;
+    pub const CONNECT_REFUSED: u8 = 0x05;
+    pub const TTL_EXPIRED: u8 = 0x06;
+    pub const CMD_NOT_SUPPORTED: u8 = 0x07;
+    pub const ATYP_NOT_SUPPORTED: u8 = 0x08;
 }
 use self::Rep::*;
 

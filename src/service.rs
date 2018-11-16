@@ -6,7 +6,7 @@ use std::io::{self, Error, ErrorKind::*, Result};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{mem, time};
 
-const LISTENER: Token = Token(0);
+const LISTENER: Token = Token(usize::max_value() - 1);
 
 pub struct Service {
     conns: Slab<Connection>,
@@ -28,9 +28,6 @@ impl Service {
         let listener = TcpListener::bind(&addr).unwrap();
         println!("Listening on: {}", addr);
 
-        let lis_stream: TcpStream = unsafe { mem::uninitialized() };
-        let c = Connection::new(lis_stream, LISTENER);
-        assert_eq!(LISTENER, self.conns.insert(c));
         self.poll
             .regisert(&listener, LISTENER, Ready::readable(), PollOpt::edge())?;
 
@@ -55,14 +52,13 @@ impl Service {
     fn accept(&mut self, lis: &TcpListener) -> Result<()> {
         loop {
             match lis.accept() {
-                (sock, addr) => {
+                (stream, addr) => {
                     println!("{:?} connected.", addr);
 
                     let entry = self.conns.vacant_entry();
                     let token = entry.key();
-                    let c = Connection::new(sock, token);
-                    c.register(&mut self.p, token, Ready::readable(), LOCAL, REGISTER)
-                        .unwrap();
+                    let c = Connection::new(stream, token, Ready::readable());
+                    c.register(&mut self.p, LOCAL, REGISTER).unwrap();
                     entry.insert(token, c);
                 }
 

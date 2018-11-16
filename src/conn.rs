@@ -58,14 +58,25 @@ impl StreamBuf {
         Ok("xyz".to_string())
     }
 
-    fn peek(&mut self, buf: &mut [u8]) -> Result<()> {
-        if buf.len() > self.payload_len() {
+    pub fn peek(&self, size: usize) -> Result<&[u8]> {
+        if size > self.payload_len() {
             return Err(Error::from(WouldBlock));
         }
 
-        Read::read(&self.buf[self.pos..self.pos + buf.len()], buf);
+        Ok(&self.buf[self.pos..self.pos + size])
+    }
 
-        Ok(())
+    pub fn consume(&mut self, size: usize) -> Result<usize> {
+        let n = cmp::min(self.payload_len(), size);
+        self.pos += n;
+        if self.pos == self.buf.len() {
+            self.pos = 0;
+            unsafe {
+                self.buf.set_len(0);
+            }
+        }
+
+        Ok(n)
     }
 
     fn tail_vacant_len(&self) -> usize {
@@ -149,12 +160,15 @@ impl StreamBuf {
 
             let result = r.read(&mut self.buf[self.buf.len()..self.buf.capacity()]);
             match result {
-                Ok(n) if n > 0 => {
-                    total_read_len += n;
-                }
+                Ok(n) if n > 0 => total_read_len += n;
                 Ok(_) => {
-                    Ok(total_read_len);
+                    if total_read_len == 0 {
+                        return Err(Error::from(UnexpectedEof));
+                    } else {
+                        return Ok(total_read_len);
+                    }
                 }
+                Err(e) if e == WouldBlock || e == Interrupted => Ok(total_read_len),
                 Err(e) => result,
             }
         }
@@ -164,7 +178,7 @@ impl StreamBuf {
 impl Read for StreamBuf {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let len = Read::read(
-            &self.buf[self.head_vacant_len()..self.tail_vacant_len()],
+            &mut self.buf[self.head_vacant_len()..self.tail_vacant_len()],
             buf,
         )?;
         self.pos += len;
@@ -206,78 +220,126 @@ impl Write for StreamBuf {
 }
 
 pub struct Connection {
-    pub local_token: Token,
-    pub remote_token: Option<Token>,
-
     local: TcpStream,
+    local_token: Token,
     local_buf: StreamBuf,
-    local_intrest: Ready,
+    local_interest: Ready,
     remote: Option<TcpStream>,
+    remote_token: Token,
     remote_buf: StreamBuf,
-    remote_intrest: Ready,
+    remote_interest: Ready,
     stage: Stage,
 }
 
 impl Connection {
-    pub fn new(local: TcpStream, local_token: Token) -> Self {
+    pub fn new(local: TcpStream, local_token: Token, interest: Ready) -> Self {
         Connection {
             local,
             local_token,
             local_buf: StreamBuf::new(),
-            local_intrest: Ready::empty(),
+            local_interest: interest,
             remote: None,
-            remote_token: None,
+            remote_token: Token::from(usize::max_value()),
             remote_buf: StreamBuf::new(),
-            remote_intrest: Ready::empty(),
+            remote_interest: Ready::empty(),
             stage: Stage::Initialize,
         }
     }
 
     fn get_stream(&self, is_local_stream: bool) -> &TcpStream {
         if is_local_stream {
-            self.local
+            &self.local
         } else {
-            self.remote.unwrap()?
+            &self.remote.unwrap()
         }
     }
 
-    pub fn register(
-        &self,
-        &mut poll: Poll,
-        token: Token,
-        ready: Ready,
-        is_local_stream: bool,
-        is_reregister: bool,
-    ) -> Result<()> {
-        let token = if is_local_stream {
+    fn get_buf(&self, is_local_stream: bool) -> &StreamBuf {
+        if is_local_stream {
+            &self.local_buf
+        } else {
+            &self.remote_buf
+        }
+    }
+
+    fn get_token(&self, is_local_stream: bool) -> Token {
+        if is_local_stream {
             self.local_token
         } else {
             self.remote_token
-        };
+        }
+    }
 
-        let opt = mio::PollOpt::edge();
-        let result = if is_reregister {
-            poll.reregister(self.get_stream(is_local_stream), token, ready, opt)
+    fn get_interest(&self, is_local_stream: bool) -> Ready {
+        if is_local_stream {
+            self.local_interest
         } else {
-            poll.register(self.get_stream(is_local_stream, token, ready, opt))
-        };
+            self.remote_interest
+        }
+    }
+
+    fn set_interest(&mut self, interest: Ready, is_local_stream: bool) {
+        if is_local_stream {
+            self.local_interest = interest;
+        } else {
+            self.remote_interest = interest;
+        }
+    }
+
+    pub fn register(&self, poll: &mut Poll, is_local_stream: bool) -> io::Result<()> {
+        let result = poll.register(
+            self.get_stream(is_local_stream),
+            self.get_token(is_local_stream),
+            self.get_interest(is_local_stream),
+            mio::PollOpt::edge()
+        );
 
         result.map(|_| {
             println!(
-                "{} {} between ({:?} {:?}) <--> {:?}",
-                if is_reregister {
-                    "RE-register"
-                } else {
-                    "register"
-                },
+                "register {} between ({:?} {:?}) <--> {:?}",
                 if is_local_stream { "LOCAL" } else { "REMOTE" },
                 self.local.peer_addr()?,
                 self.local.local_addr()?,
-                self.remote.unwrap().local_addr()?
+                if let Some(ref remote) = self.remote { remote.local_addr()? } else { "*" }
             );
         })
     }
 
+    pub fn reregister(&mut self, poll: &mut Poll, interest: Ready, is_local_stream: bool) -> io::Result<()> {
+        let result = poll.reregister(
+            self.get_stream(is_local_stream),
+            self.get_token(is_local_stream),
+            interest,
+            mio::PollOpt::edge()
+        );
+
+        if result.is_ok() {
+            self.set_interest(interest);
+        }
+
+        result.map(|_| {
+            println!(
+                "RE-register {} between ({:?} {:?}) <--> {:?}",
+                if is_local_stream { "LOCAL" } else { "REMOTE" },
+                self.local.peer_addr()?,
+                self.local.local_addr()?,
+                if let Some(ref remote) = self.remote { remote.local_addr()? } else { "*"}
+            );
+        })
+    }
+
+    fn handle_local_auth_method(&mut self) -> io::Result<()> {
+        let stream = self.get_stream(LOCAL);
+        let buf = self.get_buf(LOCAL);
+        buf.read_from(stream)?;
+        if buf.payload_len() < METHOD_SELECT_HEAD_LEN {
+            println!("{}, recive data less than {} bytes, register readable.", stream.peer_addr()?, METHOD_SELECT_HEAD_LEN);
+
+        }
+
+    }
+
+        
     fn local_handshake(&mut self) -> Result<usize> {
         let buf_len = self.buf.len();
         if buf_len < mem::size_of::<Request>() {
