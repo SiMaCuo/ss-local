@@ -45,7 +45,7 @@ pub mod Rep {
     pub const CONNECT_REFUSED: u8 = 0x05;
     pub const TTL_EXPIRED: u8 = 0x06;
     pub const CMD_NOT_SUPPORTED: u8 = 0x07;
-    pub const ATYP_NOT_SUPPORTED: u8 = 0x08;
+    pub const ADDRTYPE_NOT_SUPPORTED: u8 = 0x08;
 }
 use self::Rep::*;
 

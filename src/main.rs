@@ -5,6 +5,7 @@ extern crate slab;
 pub mod socks5;
 pub mod conn;
 pub mod service;
+pub mod err;
 
 
 fn main() {
