@@ -43,7 +43,7 @@ impl fmt::Display for CliError {
                 Rep::ADDRTYPE_NOT_SUPPORTED => write!(f, "address type not supported"),
                 Method::NO_ACCEPT_METHOD => write!(f, "no acceptable methods"),
             },
-            Buf(ref 4) => match *e {
+            Buf(ref e) => match *e {
                 Empty => write!(f, "buffer has no data"),
                 OutOfSpace => write!(f, "buffer is exhausted"),
             },

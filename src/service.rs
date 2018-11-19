@@ -3,7 +3,7 @@ use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Poll, PollOpt, Ready, Token};
 use slab::*;
 use std::io::{self, Error, ErrorKind::*, Result};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr};
 use std::{mem, time};
 
 const LISTENER: Token = Token(usize::max_value() - 1);
@@ -70,11 +70,30 @@ impl Service {
         Ok(())
     }
 
+    fn close(&self, local_token: Token) -> Result<()> {
+        let c = match self.conns.get(local_token) {
+            Some(c) => c,
+            None => {
+                println!("BUG->connection not find when try to close.");
+                return Ok(());
+            }
+        };
+        assert_eq!(local_token, c.get_token(LOCAL));
+
+        c.close();
+        self.conns.remove(c.get_token(REMOTE));
+        self.conns.remove(c.get_token(LOCAL));
+
+        Ok(())
+    }
+
     fn handle_event(&mut self, ev: &mio::Event) -> Result<()> {
         let token = ev.token();
-        let c = self.conns.get(token).unwrap();
+        let c = self.conns.get_mut(token).unwrap();
         if token == c.local_token {
+            c.handle_local_events(ev);
         } else if token == c.remote_token.unwrap() {
+            c.handle_remote_events(ev);
         } else {
             unreachable!();
         }

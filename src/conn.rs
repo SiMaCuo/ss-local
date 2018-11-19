@@ -1,5 +1,6 @@
 use super::err::*;
 use super::socks5::*;
+use super::socks5::Stage::*;
 use mio::net::TcpStream;
 use mio::{self, Event, Poll, PollOpt, Ready, Token};
 use std::io::{self, Error, ErrorKind::*, Read, Write};
@@ -122,19 +123,27 @@ impl StreamBuf {
         self.pos = 0;
     }
 
-    pub fn write_buf_to<W: Write>(&mut self, w: &mut W, buf: &[u8]) -> io::Result<usize, CliError> {
+    pub fn write_buf_to<W: Write>(&mut self, buf: &[u8], w: &mut W) -> io::Result<usize, CliError> {
         if self.payload_len() > 0 {
             let n = self.write(buf).unwrap();
             assert_eq!(n == buf.len());
 
-            self.write_to(w)
+            self.write_to(w);
+            if self.payload_len() > 0 {
+                CliError::from(WouldBlock)
+            } else {
+                Ok(n)
+            }
         } else {
             match w.write(buf) {
-                Err(ref e) if e != WouldBlock || e != Interrupted => CliErr::from(e),
-                _ => {
-                    self.write(buf);
+                Err(ref e) if e != WouldBlock || e != Interrupted => CliError::from(e),
+                Err(_) => CliError::from(WouldBlock),
+                Ok(n) => {
+                    if n < buf.len() {
+                        self.write(buf[n..]);
+                    }
                     CliError::from(WouldBlock)
-                }
+                },
             }
         }
     }
@@ -237,6 +246,7 @@ impl Write for StreamBuf {
 }
 
 pub struct Connection {
+    p: &mio::Poll,
     local: TcpStream,
     local_token: Token,
     local_buf: StreamBuf,
@@ -303,7 +313,7 @@ impl Connection {
         }
     }
 
-    fn set_interest(&mut self, poll: &mut Poll, interest: Ready, is_local_stream: bool) {
+    fn set_interest(&mut self, poll: &Poll, interest: Ready, is_local_stream: bool) {
         let current = if is_local_stream {
             self.local_interest
         } else {
@@ -366,13 +376,36 @@ impl Connection {
             );
         })
     }
+    
+    pub fn close(&self, poll: &Poll) {
+        self.get_stream(LOCAL).shutdown(Shutdown::Both);
+        poll.deregister(self.get_stream(LOCAL));
+        
+        if remote.is_some() {
+            self.get_stream(REMOTE).shutdown(Shutdown::Both);
+            poll.deregister(self.get_stream(REMOTE));
+        }
+    }
 
-    fn handle_local_auth_method(&mut self, ev: &Event) -> io::Result<(), err::CliError> {
-        assert!(ev.is_readable());
-
+    fn handle_local_events(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), err::CliError> {
         let stream = self.get_stream(LOCAL);
         let buf = self.get_buf_mut(LOCAL);
-        buf.read_from(stream)?;
+        if ev.is_readable() {
+            buf.read_from(stream)?;
+            match self.stage {
+                LocalConnected => self.handle_local_auth_method(poll, ev),
+            }
+        } else if ev.is_writeable() {
+            match self.stage {
+                WaitSndMethodSelReply => self.handle_local_snd_methodsel_reply(poll, ev),
+            }
+        }
+
+        Ok(())
+    }
+    
+    
+    fn handle_local_auth_method(&mut self, poll: &Poll, ev: &Event) -> Result<(), err::CliError> {
         if buf.payload_len() < METHOD_SELECT_HEAD_LEN {
             println!(
                 "auth {}, recive data less than  {} bytes.",
@@ -413,13 +446,55 @@ impl Connection {
         buf.consume(method_sel_len);
 
         if method != Method::NO_AUTH {
-            println!("auth {}, need auth method.", stream.peer_addr()?);
-
             return CliError::from(NO_ACCEPT_METHOD);
+        }
+
+        let no_auth[SOCKS5_VERSION; 2];
+        no_auth[1] = Method::NO_AUTH;
+        
+        match self.write_buf_to(self.get_stream_mut(LOCAL), &no_auth) {
+            StdIo(ref e) if e.kind() == WouldBlock {
+                self.set_interest(poll, Ready::writable(), LOCAL);
+                self.stage = WaitSndMethodSelReply;
+            },
+            CliError(e) => CliError(e),
+            Ok(n) => Ok(()),
+        }
+    }
+    
+    fn handle_local_snd_methodsel_reply(&mut self, poll: &Poll, ev: mio::Event) -> Result<(), err::CliError> {
+        let local_buf = self.get_buf_mut(LOCAL);
+        assert(local_buf.payload_len() > 0);
+        
+        if let CliError(StdIo(ref e) = local_buf.write_to(self.get_stream(LOCAL)) {
+            if e != WouldBlock {
+                return CliError::from(e);
+            }
+        }
+    
+        if local_buf.payload_len() == 0 {
+            self.set_interest(poll, Ready::readable());
+            self.stage = HandShake;
+        }
+
+        Ok(())
+    }
+    
+    fn local_handshake(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), err::CliError> {
+        let local_buf = self.get_buf(LOCAL);
+        let head = local_buf.peek(4)?;
+        if head[0] != SOCKS5_VERSION {
+            return CliError::from(Rep::GENERAL_FAILURE);
+        }
+
+        match head[3] {
+            AddrType::V4 => ,
+            AddrType::DOMAIN => ,
+            AddrType::V6 => ,
         }
     }
 
-    fn local_handshake(&mut self) -> Result<usize> {
+    fn local_handshake(&mut self) -> Result<(), CliError> {
         let buf_len = self.buf.len();
         if buf_len < mem::size_of::<Request>() {
             return Err(Error::from(WouldBlock));

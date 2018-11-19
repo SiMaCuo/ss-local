@@ -4,7 +4,7 @@ pub const SOCKS5_VERSION: u8 = 5;
 pub enum Stage {
     LocalConnected,
     WaitSndMethodSelReply,
-    Request,
+    HandShake,
     WaitSndReply,
     Http,
     Streaming,
