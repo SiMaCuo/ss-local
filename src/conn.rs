@@ -4,7 +4,7 @@ use super::socks5::Stage::*;
 use mio::net::TcpStream;
 use mio::{self, Event, Poll, PollOpt, Ready, Token};
 use std::io::{self, Error, ErrorKind::*, Read, Write};
-use std::{cmp, mem, net, ptr, slice};
+use std::{cmp, mem, net, ptr, slice, str};
 
 const BUF_ALLOC_SIZE: usize = 4096;
 const MIN_VACANT_SIZE: usize = 512;
@@ -55,9 +55,15 @@ impl StreamBuf {
 
         Ok(port)
     }
-
+    
     pub fn read_addr(&mut self) -> Result<String> {
         Ok("xyz".to_string())
+    }
+    
+    pub fn get_u8_unchecked(&self, index: usize) -> u8 {
+        unsafe {
+            self.buf.get_unchecked(index)
+        }
     }
 
     pub fn peek(&self, size: usize) -> Result<&[u8]> {
@@ -483,14 +489,76 @@ impl Connection {
     fn local_handshake(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), err::CliError> {
         let local_buf = self.get_buf(LOCAL);
         let head = local_buf.peek(4)?;
-        if head[0] != SOCKS5_VERSION {
+        let (ver, cmd, rsv, atpy) = (head[0], head[1], head[2], head[3]);
+        if ver != SOCKS5_VERSION {
             return CliError::from(Rep::GENERAL_FAILURE);
         }
+        
+        let addr: String = "0.0.0.0".to_string();
+        let port: u16 = u16::max_value();
+        match atyp {
+            AddrType::V4 => {
+                if local_buf.payload_len() < CMD_IPV4_LEN {
+                    return CliError::from(WouldBlock);
+                }
 
-        match head[3] {
-            AddrType::V4 => ,
-            AddrType::DOMAIN => ,
-            AddrType::V6 => ,
+                let bs = local_buf.peek(CMD_IPV4_LEN);
+                addr = net::Ipv4Addr::new(bs[CMD_HEAD_LEN], bs[CMD_HEAD_LEN+1], bs[CMD_HEAD_LEN+2], bs[CMD_HEAD_LEN+3]).to_string();
+                port = unsafe { mem::transmute::<[u8; 2], u16>([[bs[8], bs[9]]).from_be() };
+                
+                local_buf.consume(CMD_IPV4_LEN);
+            },
+
+            AddrType::DOMAIN => {
+                if local_buf.payload_len() < CMD_HEAD_LEN + 1 {
+                    return CliError::from(WouldBlock);
+                }
+
+                let domain_len = local_buf.get_u8_unchecked(CMD_HEAD_LEN);
+                let total_len = CMD_HEAD_LEN + 1 + domain_len + 2;
+                if local_buf.payload_len() < total_len {
+                    return CliError::form(WouldBlock);
+                }
+                
+                let bs = local_buf.peek(total_len);
+                addr = str::from_utf8(bs[CMD_HEAD_LEN+1..total_len-2]).to_string();
+                port = unsafe { mem::transmute::<[u8; 2], u16>([bs[total_len-2], bs[total_len-1]]).from_be() };
+
+                local_buf.consume(total_len);
+            },
+
+            AddrType::V6 => {
+                if local_buf.payload_len() < CMD_IPV6_LEN {
+                    return CliError::form(WouldBlock);
+                }
+                
+                let bs = local_buf.peek(CMD_IPV6_LEN);
+                let segments = [0u8; 16];
+                segments.as_mut().copy_from_slice(bs[CMD_HEAD_LEN..CMD_HEAD_LEN+16]);
+                addr = net::Ipv6Addr::from(segments);
+                port = unsafe { mem::transmute::<[u8; 2], u16>([bs[CMD_IPV6_LEN-2], bs[CMD_IPV6_LEN]]).from_be() };
+
+                local_buf.consume(CMD_IPV6_LEN);
+            },
+
+            _ => {
+                let response = [SOCKS5_VERSION, ADDRTYPE_NOT_SUPPORTED, 0, V4];
+                self.write_buf_to(self.get_stream_mut(LOCAL), &response);
+
+                return CliError::from(ADDRTYPE_NOT_SUPPORTED);
+            },
+        }
+
+        match cmd {
+            Cmd::CONNECT => {
+            },
+
+            _ => {
+                let response = [SOCKS5_VERSION, CMD_NOT_SUPPORTED, 0, V4];
+                self.write_buf_to(self.get_stream_mut(LOCAL), &response);
+
+                return CliError::from(CMD_NOT_SUPPORTED);
+            },
         }
     }
 

@@ -1,4 +1,7 @@
 pub const SOCKS5_VERSION: u8 = 5;
+pub const CMD_HEAD_LEN: usize = 4;
+pub const CMD_IPV4_LEN: usize = CMD_HEAD_LEN + 4 + 2;
+pub const CMD_IPV6_LEN: usize = CMD_HEAD_LEN + 16 + 2;
 
 #[derive(Debug)]
 pub enum Stage {
