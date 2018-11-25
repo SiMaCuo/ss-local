@@ -39,9 +39,12 @@ impl Service {
                 match ev.token() {
                     LISTENER => {
                         self.accept();
-                    }
+                    },
 
-                    _ => {}
+                    _ => {
+                        let token = ev.token();
+                        let c = self.conns.get_mut(token).unwrap();
+                        c.handle_events(p, ev, token);
                 }
             }
         }
@@ -58,7 +61,7 @@ impl Service {
                     let entry = self.conns.vacant_entry();
                     let token = entry.key();
                     let c = Connection::new(stream, token, Ready::readable());
-                    c.register(&mut self.p, LOCAL, REGISTER).unwrap();
+                    c.register(&mut self.p, LOCAL).unwrap();
                     entry.insert(token, c);
                 }
 
@@ -87,7 +90,7 @@ impl Service {
         Ok(())
     }
 
-    fn handle_event(&mut self, ev: &mio::Event) -> Result<()> {
+    fn handle_events(&mut self, ev: &mio::Event) -> Result<()> {
         let token = ev.token();
         let c = self.conns.get_mut(token).unwrap();
         if token == c.local_token {
