@@ -1,20 +1,20 @@
 use conn::*;
-use mio::net::{TcpListener, TcpStream};
+use mio::net::TcpListener;
 use mio::{Events, Poll, PollOpt, Ready, Token};
 use slab::*;
-use std::io::{self, Error, ErrorKind::*, Result};
-use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr};
-use std::{mem, time};
+use std::io::{ErrorKind::*, Result};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::time;
 
 const LISTENER: Token = Token(usize::max_value() - 1);
 
-pub struct Service {
-    conns: Slab<Connection>,
+pub struct Service<'a> {
+    conns: Slab<Connection<'a>>,
     p: Poll,
     evs: Events,
 }
 
-impl Service {
+impl<'a> Service<'a> {
     pub fn new() -> Self {
         Service {
             conns: Slab::with_capacity(1024),
@@ -39,12 +39,13 @@ impl Service {
                 match ev.token() {
                     LISTENER => {
                         self.accept();
-                    },
+                    }
 
                     _ => {
                         let token = ev.token();
                         let c = self.conns.get_mut(token).unwrap();
-                        c.handle_events(p, ev, token);
+                        c.handle_events(self.p, ev, token);
+                    }
                 }
             }
         }
@@ -60,7 +61,7 @@ impl Service {
 
                     let entry = self.conns.vacant_entry();
                     let token = entry.key();
-                    let c = Connection::new(stream, token, Ready::readable());
+                    let c = Connection::new(&self.p, stream, token, Ready::readable());
                     c.register(&mut self.p, LOCAL).unwrap();
                     entry.insert(token, c);
                 }

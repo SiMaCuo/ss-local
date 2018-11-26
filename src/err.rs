@@ -85,9 +85,3 @@ impl From<u8> for CliError {
         }
     }
 }
-
-impl From<BufError> for CliError {
-    fn from(err: BufError) -> CliError {
-        Buf(BufError)
-    }
-}

@@ -1,10 +1,8 @@
-use super::err::*;
-use super::socks5::*;
-use super::socks5::Stage::*;
-use mio::net::TcpStream;
-use mio::{self, Event, Poll, PollOpt, Ready, Token};
-use std::io::{self, Error, ErrorKind::*, Read, Write};
-use std::{cmp, mem, net, ptr, slice, str};
+use super::err::{CliError::*, *};
+use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
+use mio::{self, net::TcpStream, Event, Poll, PollOpt, Ready, Token};
+use std::io::{self, ErrorKind::*, Read, Write};
+use std::{cmp, mem, net, ptr, str};
 
 const BUF_ALLOC_SIZE: usize = 4096;
 const MIN_VACANT_SIZE: usize = 512;
@@ -30,9 +28,9 @@ impl StreamBuf {
         self.buf.len() - self.pos
     }
 
-    pub fn read_u8(&mut self) -> Result<u8, err::CliError> {
+    pub fn read_u8(&mut self) -> Result<u8, CliError> {
         if self.payload_len() < 1 {
-            return CliError::from(WouldBlock);
+            return Err(CliError::from(WouldBlock));
         }
 
         let mut b = [0u8; 1];
@@ -41,9 +39,9 @@ impl StreamBuf {
         Ok(b[0])
     }
 
-    pub fn read_port(&mut self) -> Result<u16> {
+    pub fn read_port(&mut self) -> Result<u16, CliError> {
         if self.payload_len() < 2 {
-            return CliError::from(WouldBlock);
+            return Err(CliError::from(WouldBlock));
         }
 
         let mut b = [0u8; 2];
@@ -55,26 +53,24 @@ impl StreamBuf {
 
         Ok(port)
     }
-    
-    pub fn read_addr(&mut self) -> Result<String> {
+
+    pub fn read_addr(&mut self) -> Result<String, CliError> {
         Ok("xyz".to_string())
     }
-    
+
     pub fn get_u8_unchecked(&self, index: usize) -> u8 {
-        unsafe {
-            self.buf.get_unchecked(index)
-        }
+        unsafe { self.buf.get_unchecked(index) }
     }
 
-    pub fn peek(&self, size: usize) -> Result<&[u8]> {
+    pub fn peek(&self, size: usize) -> Result<&[u8], CliError> {
         if size > self.payload_len() {
-            return CliError::from(WouldBlock);
+            return Err(CliError::from(WouldBlock));
         }
 
         Ok(&self.buf[self.pos..self.pos + size])
     }
 
-    pub fn consume(&mut self, size: usize) -> Result<usize> {
+    pub fn consume(&mut self, size: usize) -> Result<usize, CliError> {
         let n = cmp::min(self.payload_len(), size);
         self.pos += n;
         if self.pos == self.buf.len() {
@@ -129,32 +125,34 @@ impl StreamBuf {
         self.pos = 0;
     }
 
-    pub fn write_buf_to<W: Write>(&mut self, buf: &[u8], w: &mut W) -> io::Result<usize, CliError> {
+    pub fn write_buf_to<W: Write>(&mut self, buf: &[u8], w: &mut W) -> Result<usize, CliError> {
         if self.payload_len() > 0 {
             let n = self.write(buf).unwrap();
-            assert_eq!(n == buf.len());
+            assert_eq!(n, buf.len());
 
             self.write_to(w);
             if self.payload_len() > 0 {
-                CliError::from(WouldBlock)
+                Err(CliError::from(WouldBlock))
             } else {
                 Ok(n)
             }
         } else {
             match w.write(buf) {
-                Err(ref e) if e != WouldBlock || e != Interrupted => CliError::from(e),
-                Err(_) => CliError::from(WouldBlock),
+                Err(ref e) if e.kind() != WouldBlock || e.kind() != Interrupted => {
+                    Err(CliError::from(e.kind()))
+                }
+                Err(_) => Err(CliError::from(WouldBlock)),
                 Ok(n) => {
                     if n < buf.len() {
                         self.write(buf[n..]);
                     }
-                    CliError::from(WouldBlock)
-                },
+                    Err(CliError::from(WouldBlock))
+                }
             }
         }
     }
 
-    pub fn write_to<W: Write>(&mut self, w: &mut W) -> io::Result<usize, CliError> {
+    pub fn write_to<W: Write>(&mut self, w: &mut W) -> Result<usize, CliError> {
         let result = w.write(&self.buf[self.pos..self.buf.len()]);
         match result {
             Ok(n) if n != 0 => {
@@ -169,7 +167,7 @@ impl StreamBuf {
                 Ok(n)
             }
 
-            Ok(_) => CliError::from(WouldBlock),
+            Ok(_) => Err(CliError::from(WouldBlock)),
 
             Err(e) => CliError::from(e),
         }
@@ -193,13 +191,15 @@ impl StreamBuf {
 
                 Ok(_) => {
                     if total_read_len == 0 {
-                        return CliError::from(UnexpectedEof);
+                        return Err(CliError::from(UnexpectedEof));
                     } else {
                         return Ok(total_read_len);
                     }
                 }
 
-                Err(e) if e == WouldBlock || e == Interrupted => return Ok(total_read_len),
+                Err(e) if e.kind() == WouldBlock || e.kind() == Interrupted => {
+                    return Ok(total_read_len)
+                }
 
                 Err(e) => return result,
             }
@@ -252,7 +252,6 @@ impl Write for StreamBuf {
 }
 
 pub struct Connection {
-    p: &mio::Poll,
     local: TcpStream,
     local_token: Token,
     local_buf: StreamBuf,
@@ -334,38 +333,48 @@ impl Connection {
             self.get_stream(is_local_stream),
             self.get_token(is_local_stream),
             interest,
-            mio::PollOpt::edge(),
+            PollOpt::edge(),
         );
+        
+        match result {
+            Ok(()) => {
+                if is_local_stream {
+                    self.local_interest = interest;
+                } else {
+                    self.remote_interest = interest;
+                }
+            },
 
-        if result.is_ok() {
-            if is_local_stream {
-                self.local_interest = interest;
-            } else {
-                self.remote_interest = interest;
-            }
+            Err(_) {
+                info!(
+                    "RE-register {} between ({:?} {:?}) <--> {:?}",
+                    if is_local_stream { "LOCAL" } else { "REMOTE" },
+                    self.local.peer_addr()?,
+                    self.local.local_addr()?,
+                    if let Some(ref remote) = self.remote {
+                        remote.local_addr()?
+                    } else {
+                        "*"
+                    }
+                );
+            },
         }
 
-        result.map(|_| {
-            println!(
-                "RE-register {} between ({:?} {:?}) <--> {:?}",
-                if is_local_stream { "LOCAL" } else { "REMOTE" },
-                self.local.peer_addr()?,
-                self.local.local_addr()?,
-                if let Some(ref remote) = self.remote {
-                    remote.local_addr()?
-                } else {
-                    "*"
-                }
-            );
-        })
+
     }
 
-    pub fn register(&self, poll: &mut Poll, token: Token, interest: mio::Ready, is_local_stream: bool) -> io::Result<()> {
+    pub fn register(
+        &self,
+        poll: &mut Poll,
+        token: Token,
+        interest: mio::Ready,
+        is_local_stream: bool,
+    ) -> io::Result<()> {
         let result = poll.register(
             self.get_stream(is_local_stream),
             self.get_token(is_local_stream),
             self.get_interest(is_local_stream),
-            mio::PollOpt::edge(),
+            PollOpt::edge(),
         );
 
         result.map(|_| {
@@ -382,18 +391,18 @@ impl Connection {
             );
         })
     }
-    
+
     pub fn close(&self, poll: &Poll) {
-        self.get_stream(LOCAL).shutdown(Shutdown::Both);
+        self.get_stream(LOCAL).shutdown(net::Shutdown::Both);
         poll.deregister(self.get_stream(LOCAL));
-        
-        if remote.is_some() {
-            self.get_stream(REMOTE).shutdown(Shutdown::Both);
+
+        if self.remote.is_some() {
+            self.get_stream(REMOTE).shutdown(net::Shutdown::Both);
             poll.deregister(self.get_stream(REMOTE));
         }
     }
 
-    fn handle_local_events(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), err::CliError> {
+    fn handle_local_events(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
         let stream = self.get_stream(LOCAL);
         let buf = self.get_buf_mut(LOCAL);
         if ev.is_readable() {
@@ -409,31 +418,31 @@ impl Connection {
 
         Ok(())
     }
-    
-    
-    fn handle_local_auth_method(&mut self, poll: &Poll, ev: &Event) -> Result<(), err::CliError> {
+
+    fn handle_local_auth_method(&mut self, poll: &Poll, ev: &Event) -> Result<(), CliError> {
+        let buf = self.get_buf(LOCAL);
         if buf.payload_len() < METHOD_SELECT_HEAD_LEN {
             println!(
                 "auth {}, recive data less than  {} bytes.",
-                stream.peer_addr()?,
+                self.local.peer_addr()?,
                 METHOD_SELECT_HEAD_LEN
             );
 
             return Ok(());
         }
 
-        let head = buf.peek(METHOD_SELECT_HEAD_LEN);
-        if head[0] != SOCKS5_VERSION {
-            return Error::from(InvalidData);
+        let head = buf.peek(METHOD_SELECT_HEAD_LEN)?;
+        let (ver, nmethods) = (head[0], head[1]);
+        if ver != SOCKS5_VERSION {
+            return Err(CliError::from(InvalidData));
         }
 
-        let nmethods = head[1];
         let method_sel_len = nmethods + METHOD_SELECT_HEAD_LEN;
-        if method_sel_len > self.payload_len() {
+        if method_sel_len > buf.payload_len() {
             println!(
                 "auth {}, recive data size {} less than need {}.",
-                stream.peer_addr()?,
-                self.payload_len(),
+                self.local.peer_addr()?,
+                buf.payload_len(),
                 method_sel_len
             );
 
@@ -441,7 +450,7 @@ impl Connection {
         }
 
         let mut method = Method::NO_ACCEPT_METHOD;
-        let sel = buf.peek(method_sel_len);
+        let sel = self.buf.peek(method_sel_len);
         for pos in 0..nmethods {
             if sel[METHOD_SELECT_HEAD_LEN + pos] == Method::NO_AUTH {
                 method = Method::NO_AUTH;
@@ -449,35 +458,41 @@ impl Connection {
             }
         }
 
-        buf.consume(method_sel_len);
+        self.buf.consume(method_sel_len);
 
         if method != Method::NO_AUTH {
-            return CliError::from(NO_ACCEPT_METHOD);
+            return CliError::from(Method::NO_ACCEPT_METHOD);
         }
 
-        let no_auth[SOCKS5_VERSION; 2];
+        let no_auth = [SOCKS5_VERSION; 2];
         no_auth[1] = Method::NO_AUTH;
-        
+
         match self.write_buf_to(self.get_stream_mut(LOCAL), &no_auth) {
-            StdIo(ref e) if e.kind() == WouldBlock {
+            StdIo(ref e) if e.kind() == WouldBlock => {
                 self.set_interest(poll, Ready::writable(), LOCAL);
                 self.stage = WaitSndMethodSelReply;
-            },
-            CliError(e) => CliError(e),
+            }
+
             Ok(n) => Ok(()),
+
+            e @ _ => e,
         }
     }
-    
-    fn handle_local_snd_methodsel_reply(&mut self, poll: &Poll, ev: mio::Event) -> Result<(), err::CliError> {
+
+    fn handle_local_snd_methodsel_reply(
+        &mut self,
+        poll: &Poll,
+        ev: mio::Event,
+    ) -> Result<(), CliError> {
         let local_buf = self.get_buf_mut(LOCAL);
-        assert(local_buf.payload_len() > 0);
-        
-        if let CliError(StdIo(ref e) = local_buf.write_to(self.get_stream(LOCAL)) {
+        assert!(local_buf.payload_len() > 0);
+
+        if let StdIo(ref e) = local_buf.write_to(self.get_stream(LOCAL)) {
             if e != WouldBlock {
                 return CliError::from(e);
             }
         }
-    
+
         if local_buf.payload_len() == 0 {
             self.set_interest(poll, Ready::readable());
             self.stage = HandShake;
@@ -485,33 +500,38 @@ impl Connection {
 
         Ok(())
     }
-    
-    fn handle_handshake(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), err::CliError> {
+
+    fn handle_handshake(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
         let local_buf = self.get_buf(LOCAL);
         let head = local_buf.peek(4)?;
         let (ver, cmd, rsv, atpy) = (head[0], head[1], head[2], head[3]);
         if ver != SOCKS5_VERSION {
             return CliError::from(Rep::GENERAL_FAILURE);
         }
-        
+
         let addr: String = "0.0.0.0".to_string();
         let port: u16 = u16::max_value();
-        match atyp {
+        match atpy {
             AddrType::V4 => {
                 if local_buf.payload_len() < CMD_IPV4_LEN {
-                    return CliError::from(WouldBlock);
+                    return Err(CliError::from(WouldBlock));
                 }
 
-                let bs = local_buf.peek(CMD_IPV4_LEN);
-                addr = net::Ipv4Addr::new(bs[CMD_HEAD_LEN], bs[CMD_HEAD_LEN+1], bs[CMD_HEAD_LEN+2], bs[CMD_HEAD_LEN+3]).to_string();
-                port = unsafe { mem::transmute::<[u8; 2], u16>([[bs[8], bs[9]]).from_be() };
-                
+                let bs = local_buf.peek(CMD_IPV4_LEN)?;
+                addr = net::Ipv4Addr::new(
+                    bs[CMD_HEAD_LEN],
+                    bs[CMD_HEAD_LEN + 1],
+                    bs[CMD_HEAD_LEN + 2],
+                    bs[CMD_HEAD_LEN + 3],
+                ).to_string();
+                port = unsafe { mem::transmute::<[u8; 2], u16>([bs[8], bs[9]]).from_be() };
+
                 local_buf.consume(CMD_IPV4_LEN);
-            },
+            }
 
             AddrType::DOMAIN => {
                 if local_buf.payload_len() < CMD_HEAD_LEN + 1 {
-                    return CliError::from(WouldBlock);
+                    return Err(CliError::from(WouldBlock));
                 }
 
                 let domain_len = local_buf.get_u8_unchecked(CMD_HEAD_LEN);
@@ -519,27 +539,34 @@ impl Connection {
                 if local_buf.payload_len() < total_len {
                     return CliError::form(WouldBlock);
                 }
-                
+
                 let bs = local_buf.peek(total_len);
-                addr = str::from_utf8(bs[CMD_HEAD_LEN+1..total_len-2]).to_string();
-                port = unsafe { mem::transmute::<[u8; 2], u16>([bs[total_len-2], bs[total_len-1]]).from_be() };
+                addr = str::from_utf8(bs[CMD_HEAD_LEN + 1..total_len - 2]).to_string();
+                port = unsafe {
+                    mem::transmute::<[u8; 2], u16>([bs[total_len - 2], bs[total_len - 1]]).from_be()
+                };
 
                 local_buf.consume(total_len);
-            },
+            }
 
             AddrType::V6 => {
                 if local_buf.payload_len() < CMD_IPV6_LEN {
                     return CliError::form(WouldBlock);
                 }
-                
+
                 let bs = local_buf.peek(CMD_IPV6_LEN);
                 let segments = [0u8; 16];
-                segments.as_mut().copy_from_slice(bs[CMD_HEAD_LEN..CMD_HEAD_LEN+16]);
+                segments
+                    .as_mut()
+                    .copy_from_slice(bs[CMD_HEAD_LEN..CMD_HEAD_LEN + 16]);
                 addr = net::Ipv6Addr::from(segments);
-                port = unsafe { mem::transmute::<[u8; 2], u16>([bs[CMD_IPV6_LEN-2], bs[CMD_IPV6_LEN]]).from_be() };
+                port = unsafe {
+                    mem::transmute::<[u8; 2], u16>([bs[CMD_IPV6_LEN - 2], bs[CMD_IPV6_LEN]])
+                        .from_be()
+                };
 
                 local_buf.consume(CMD_IPV6_LEN);
-            },
+            }
 
             _ => {
                 let response = [SOCKS5_VERSION, ADDRTYPE_NOT_SUPPORTED, 0, V4];
@@ -548,27 +575,26 @@ impl Connection {
                 error!("notsupported addrtype {}", atpy);
 
                 return CliError::from(ADDRTYPE_NOT_SUPPORTED);
-            },
+            }
         }
 
         match cmd {
             Cmd::CONNECT => {
                 let host = format!("{}:{}", addr, port);
                 info!("connect to host {}", host);
-                
-                mio::TcpStream::connect(host.parse().unwrap())
+
+                TcpStream::connect(host.parse().unwrap())
                     .and_then(|sock| {
-                        sock.set_nodelay(true)?;
                         let entry = self.conns.vacant_entry();
                         let token = entry.key();
                         self.remote = Some(sock);
                         self.remote_token = token;
                         self.remote_interest = Ready::readable();
-                        self.register(p, REMOTE)?;
+                        self.register(self.p, REMOTE)?;
                     }).map_err(CliError::from);
 
-                self.stage = Streaming; 
-            },
+                self.stage = Streaming;
+            }
 
             _ => {
                 let response = [SOCKS5_VERSION, CMD_NOT_SUPPORTED, 0, V4];
@@ -577,34 +603,28 @@ impl Connection {
                 error!("notsupported command {}", cmd);
 
                 return CliError::from(CMD_NOT_SUPPORTED);
-            },
+            }
         }
     }
 
-    fn handle_streaming(&mut self, poll: &mut Poll, ev: &mio::Event) -> Result<(), CliError> {
+    fn handle_streaming(&mut self, poll: &mut Poll, ev: &mio::Event) -> Result<(), CliError> {}
 
-    }
-        
-    pub fn handle_events(&mut self, poll: &mut Poll, ev: &mio::Event, token: Token) -> Result<(), CliError> {
+    pub fn handle_events(
+        &mut self,
+        poll: &mut Poll,
+        ev: &mio::Event,
+        token: Token,
+    ) -> Result<(), CliError> {
         let result = match self.stage {
-            LocalConnected => {
-                self.handle_local_auth_method(poll, ev)
-            },
+            LocalConnected => self.handle_local_auth_method(poll, ev),
 
-            WaitSndMethodSelReply => {
-                self.handle_local_snd_methodsel_reply(poll, ev)
-            },
+            WaitSndMethodSelReply => self.handle_local_snd_methodsel_reply(poll, ev),
 
-            HandShake => {
-                self.handle_handshake(poll, ev)
-            },
+            HandShake => self.handle_handshake(poll, ev),
 
-            Streaming => {
-                self.handle_streaming(poll, ev)
-            },
-        }
+            Streaming => self.handle_streaming(poll, ev),
+        };
+
+        Ok(())
     }
-            
-
 }
-

@@ -28,7 +28,6 @@ pub mod Cmd {
     pub const BIND: u8 = 0x2;
     pub const UDP_ASSOCIATE: u8 = 0x3;
 }
-use self::Cmd::*;
 
 #[allow(dead_code)]
 pub mod AddrType {
