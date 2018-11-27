@@ -2,7 +2,7 @@ use super::err::{CliError::*, *};
 use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
 use mio::{self, net::TcpStream, Event, Poll, PollOpt, Ready, Token};
 use std::io::{self, ErrorKind::*, Read, Write};
-use std::{cmp, mem, net, ptr, str};
+use std::{cmp, mem, net, ptr, str, fmt::Debug};
 
 const BUF_ALLOC_SIZE: usize = 4096;
 const MIN_VACANT_SIZE: usize = 512;
@@ -138,10 +138,8 @@ impl StreamBuf {
             }
         } else {
             match w.write(buf) {
-                Err(ref e) if e.kind() != WouldBlock || e.kind() != Interrupted => {
-                    Err(CliError::from(e.kind()))
-                }
-                Err(_) => Err(CliError::from(WouldBlock)),
+                Err(e) => Err(CliError::from(e.kind())),
+
                 Ok(n) => {
                     if n < buf.len() {
                         self.write(buf[n..]);
@@ -152,7 +150,7 @@ impl StreamBuf {
         }
     }
 
-    pub fn write_to<W: Write>(&mut self, w: &mut W) -> Result<usize, CliError> {
+    pub fn write_to<W: Write+Debug>(&mut self, w: &mut W) -> Result<usize, CliError> {
         let result = w.write(&self.buf[self.pos..self.buf.len()]);
         match result {
             Ok(n) if n != 0 => {
@@ -167,13 +165,17 @@ impl StreamBuf {
                 Ok(n)
             }
 
-            Ok(_) => Err(CliError::from(WouldBlock)),
+            Ok(_) => {
+                info!("{:?} write to {:?} 0 bytes, maybe this connection is closed by peer.", self, w);
+                
+                Err(CliError::from(WouldBlock))
+            },
 
-            Err(e) => CliError::from(e),
+            Err(e) => Err(CliError::from(e)),
         }
     }
 
-    pub fn read_from<R: Read>(&mut self, r: &mut R) -> io::Result<usize> {
+    pub fn read_from<R: Read>(&mut self, r: &mut R) -> Result<usize, CliError> {
         let total_read_len: usize = 0;
         loop {
             let mut vacant_len = self.vacant_len();
@@ -198,7 +200,11 @@ impl StreamBuf {
                 }
 
                 Err(e) if e.kind() == WouldBlock || e.kind() == Interrupted => {
-                    return Ok(total_read_len)
+                    if total_read_len > 0 {
+                        return Ok(total_read_len);
+                    } else {
+                        return Err(CliError::from(WouldBlock));
+                    }
                 }
 
                 Err(e) => return result,
@@ -345,7 +351,7 @@ impl Connection {
                 }
             },
 
-            Err(_) {
+            Err(_) => {
                 info!(
                     "RE-register {} between ({:?} {:?}) <--> {:?}",
                     if is_local_stream { "LOCAL" } else { "REMOTE" },
@@ -582,7 +588,7 @@ impl Connection {
             Cmd::CONNECT => {
                 let host = format!("{}:{}", addr, port);
                 info!("connect to host {}", host);
-
+                
                 TcpStream::connect(host.parse().unwrap())
                     .and_then(|sock| {
                         let entry = self.conns.vacant_entry();
@@ -591,9 +597,11 @@ impl Connection {
                         self.remote_token = token;
                         self.remote_interest = Ready::readable();
                         self.register(self.p, REMOTE)?;
+                        self.stage = RemoteConnecting;
+
+                        Ok(())
                     }).map_err(CliError::from);
 
-                self.stage = Streaming;
             }
 
             _ => {
@@ -606,8 +614,29 @@ impl Connection {
             }
         }
     }
+    
+    fn handle_remote_connected(&mut self, poll: &mut Poll, ev: &mio::Event) -> Result<(), CliError> {
+        assert_eq!(self.remote_token, ev.token());
+        
+        let local_stream = self.get_stream(LOCAL);
+        let local_buf = self.get_buf_mut(LOCAL);
+        let remote_stream = self.get_stream(REMOTE);
+        
+        match local_buf.read_from(remote_stream) {
+            Ok(0) => return CliError::from(UnexpectedEof),
+            Err(ref e) if e.is_would_block() == false => return Err(*e),
+            _ => (),
+        }
+        
+        assert!(local_buf.payload_len() > 0);
 
-    fn handle_streaming(&mut self, poll: &mut Poll, ev: &mio::Event) -> Result<(), CliError> {}
+        local_buf.write_to(remote_stream);
+
+
+    fn handle_streaming(&mut self, poll: &mut Poll, ev: &mio::Event) -> Result<(), CliError> {
+
+    }
+
 
     pub fn handle_events(
         &mut self,

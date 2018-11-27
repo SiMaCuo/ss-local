@@ -10,6 +10,7 @@ pub enum Stage {
     HandShake,
     WaitSndReply,
     Http,
+    RemoteConnecting,
     Streaming,
 }
 
