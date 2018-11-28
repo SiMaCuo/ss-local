@@ -14,6 +14,7 @@ use self::CliError::*;
 #[derive(Debug)]
 pub enum BufError {
     Empty,
+    InsufficientData,
     OutOfSpace,
 }
 
@@ -45,6 +46,7 @@ impl fmt::Display for CliError {
             },
             Buf(ref e) => match *e {
                 Empty => write!(f, "buffer has no data"),
+                InsufficientData => write!(f, "not enough cached data"),
                 OutOfSpace => write!(f, "buffer is exhausted"),
             },
         }
@@ -83,5 +85,11 @@ impl From<u8> for CliError {
             | Method::NO_ACCEPT_METHOD => Sock5(err),
             _ => panic!("u8 type sock error code can't recognize"),
         }
+    }
+}
+
+impl From<BufError> for CliError {
+    fn from(err: BufError) -> CliError {
+        Buf(err)
     }
 }

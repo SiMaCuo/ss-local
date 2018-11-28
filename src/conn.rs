@@ -1,4 +1,4 @@
-use super::err::{CliError::*, *};
+use super::err::{CliError::*, BufError::*, *};
 use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
 use mio::{self, net::TcpStream, Event, Poll, PollOpt, Ready, Token};
 use std::io::{self, ErrorKind::*, Read, Write};
@@ -30,7 +30,7 @@ impl StreamBuf {
 
     pub fn read_u8(&mut self) -> Result<u8, CliError> {
         if self.payload_len() < 1 {
-            return Err(CliError::from(WouldBlock));
+            return Err(CliError::from(InsufficientData));
         }
 
         let mut b = [0u8; 1];
@@ -41,7 +41,7 @@ impl StreamBuf {
 
     pub fn read_port(&mut self) -> Result<u16, CliError> {
         if self.payload_len() < 2 {
-            return Err(CliError::from(WouldBlock));
+            return Err(CliError::from(InsufficientData));
         }
 
         let mut b = [0u8; 2];
@@ -64,7 +64,7 @@ impl StreamBuf {
 
     pub fn peek(&self, size: usize) -> Result<&[u8], CliError> {
         if size > self.payload_len() {
-            return Err(CliError::from(WouldBlock));
+            return Err(CliError::from(InsufficientData));
         }
 
         Ok(&self.buf[self.pos..self.pos + size])
@@ -115,7 +115,7 @@ impl StreamBuf {
         let src = self.buf.as_ptr().add(self.pos);
         let dst = self.buf.as_mut_ptr();
         unsafe {
-            if len < self.pos {
+            if len < self.head_vacant_len() {
                 ptr::copy_nonoverlapping(src, dst, len);
             } else {
                 ptr::copy(src, dst, len);
@@ -125,27 +125,19 @@ impl StreamBuf {
         self.pos = 0;
     }
 
-    pub fn write_buf_to<W: Write>(&mut self, buf: &[u8], w: &mut W) -> Result<usize, CliError> {
+    pub fn write_buf_to<W: Write+Debug>(&mut self, buf: &[u8], w: &mut W) -> Result<usize, CliError> {
         if self.payload_len() > 0 {
             let n = self.write(buf).unwrap();
-            assert_eq!(n, buf.len());
 
-            self.write_to(w);
-            if self.payload_len() > 0 {
-                Err(CliError::from(WouldBlock))
-            } else {
-                Ok(n)
-            }
+            self.write_to(w).and_then(|_| { Ok(n) })
         } else {
-            match w.write(buf) {
-                Err(e) => Err(CliError::from(e.kind())),
-
-                Ok(n) => {
+            w.write(buf)
+                .map_err(|e| CliError::from(e) )
+                .and_then(|n| {
                     if n < buf.len() {
-                        self.write(buf[n..]);
+                        self.write(buf[n..);
                     }
-                    Err(CliError::from(WouldBlock))
-                }
+                    CliError::from(WouldBlock)});
             }
         }
     }
@@ -153,7 +145,7 @@ impl StreamBuf {
     pub fn write_to<W: Write+Debug>(&mut self, w: &mut W) -> Result<usize, CliError> {
         let result = w.write(&self.buf[self.pos..self.buf.len()]);
         match result {
-            Ok(n) if n != 0 => {
+            Ok(n) if n > 0 => {
                 self.pos += n;
                 if self.payload_len() == 0 {
                     self.pos = 0;
@@ -165,7 +157,7 @@ impl StreamBuf {
                 Ok(n)
             }
 
-            Ok(_) => {
+            Ok(0) => {
                 info!("{:?} write to {:?} 0 bytes, maybe this connection is closed by peer.", self, w);
                 
                 Err(CliError::from(WouldBlock))
@@ -189,25 +181,29 @@ impl StreamBuf {
 
             let result = r.read(&mut self.buf[self.buf.len()..self.buf.capacity()]);
             match result {
-                Ok(n) if n > 0 => total_read_len += n,
-
-                Ok(_) => {
-                    if total_read_len == 0 {
-                        return Err(CliError::from(UnexpectedEof));
-                    } else {
-                        return Ok(total_read_len);
+                Ok(n) => { 
+                    if n > 0 {
+                        total_read_len += n;
+                    } else if n == 0 {
+                        if total_read_len == 0 {
+                            Err(CliError::from(UnexpectedEof))
+                        } else {
+                            Ok(total_read_len)
+                        }
                     }
-                }
+                },
 
-                Err(e) if e.kind() == WouldBlock || e.kind() == Interrupted => {
-                    if total_read_len > 0 {
-                        return Ok(total_read_len);
+                Err(e) => {
+                    if e.kind() == WouldBlock || e.kind() == Interrupted {
+                        if total_read_len > 0 {
+                            Ok(total_read_len)
+                        } else {
+                            Err(CliError::from(WouldBlock))
+                        }
                     } else {
-                        return Err(CliError::from(WouldBlock));
+                        Err(CliError::from(e))
                     }
-                }
-
-                Err(e) => return result,
+                },
             }
         }
     }
@@ -339,7 +335,7 @@ impl Connection {
             self.get_stream(is_local_stream),
             self.get_token(is_local_stream),
             interest,
-            PollOpt::edge(),
+            PollOpt::edge()
         );
         
         match result {
@@ -380,7 +376,7 @@ impl Connection {
             self.get_stream(is_local_stream),
             self.get_token(is_local_stream),
             self.get_interest(is_local_stream),
-            PollOpt::edge(),
+            PollOpt::edge()
         );
 
         result.map(|_| {
