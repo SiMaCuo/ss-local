@@ -8,13 +8,13 @@ use std::time;
 
 const LISTENER: Token = Token(usize::max_value() - 1);
 
-pub struct Service<'a> {
-    conns: Slab<Connection<'a>>,
+pub struct Service {
+    conns: Slab<Connection>,
     p: Poll,
     evs: Events,
 }
 
-impl<'a> Service<'a> {
+impl Service {
     pub fn new() -> Self {
         Service {
             conns: Slab::with_capacity(1024),
@@ -56,29 +56,32 @@ impl<'a> Service<'a> {
     fn accept(&mut self, lis: &TcpListener) -> Result<()> {
         loop {
             match lis.accept() {
-                (stream, addr) => {
+                Ok((stream, addr)) => {
                     println!("{:?} connected.", addr);
 
                     let entry = self.conns.vacant_entry();
                     let token = entry.key();
-                    let c = Connection::new(&self.p, stream, token, Ready::readable());
+                    let c = Connection::new(stream, token, Ready::readable());
                     c.register(&mut self.p, LOCAL).unwrap();
                     entry.insert(token, c);
                 }
 
-                Err(ref e) if e.kind() == WouldBlock => Ok(()),
-                Err(e) => Err(e),
+                Err(e) => {
+                    if e.kind() == WouldBlock || e.kind() == Interrupted {
+                        return Ok(());
+                    } else {
+                        return Err(e);
+                    }
+                }
             }
         }
-
-        Ok(())
     }
 
     fn close(&self, local_token: Token) -> Result<()> {
         let c = match self.conns.get(local_token) {
             Some(c) => c,
             None => {
-                println!("BUG->connection not find when try to close.");
+                warn!("BUG->connection not find when try to close.");
                 return Ok(());
             }
         };

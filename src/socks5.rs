@@ -6,7 +6,7 @@ pub const CMD_IPV6_LEN: usize = CMD_HEAD_LEN + 16 + 2;
 #[derive(Debug)]
 pub enum Stage {
     LocalConnected,
-    WaitSndMethodSelReply,
+    SendMethodSelect,
     HandShake,
     WaitSndReply,
     Http,
