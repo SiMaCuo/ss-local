@@ -21,7 +21,7 @@ pub enum BufError {
 use self::BufError::*;
 
 impl CliError {
-    pub fn is_would_block(&self) -> bool {
+    pub fn is_wouldblock(&self) -> bool {
         match *self {
             StdIo(e) if e.kind() == WouldBlock || e.kind() == Interrupted => true,
             _ => false,

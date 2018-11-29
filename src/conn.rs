@@ -1,10 +1,10 @@
 use super::err::{BufError::*, CliError::*, *};
-use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
 use super::service::Service;
+use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
 use mio::{self, net::TcpStream, Event, Poll, PollOpt, Ready, Token};
 use std::io::{self, ErrorKind::*, Read, Write};
-use std::{cmp, fmt::Debug, mem, ptr, str, rc::Rc};
-use std::net::{self, Ipv4Addr, Ipv6Addr};
+use std::net::{self, IpAddr, Ipv4Addr, Ipv6Addr};
+use std::{cmp, fmt::Debug, mem, ptr, rc::Rc, str};
 
 const BUF_ALLOC_SIZE: usize = 4096;
 const MIN_VACANT_SIZE: usize = 512;
@@ -260,8 +260,8 @@ impl Write for StreamBuf {
     }
 }
 
-pub struct Connection {
-    srv: Rc<Service>,
+pub struct Connection<'a> {
+    srv: &'a Service<'a>,
     local: TcpStream,
     local_token: Token,
     local_buf: StreamBuf,
@@ -273,23 +273,23 @@ pub struct Connection {
     stage: Stage,
 }
 
-impl Connection {
-    pub fn new(srv: Rc<Service>, local: TcpStream, local_token: Token, interest: Ready) -> Self {
+impl<'a> Connection<'a> {
+    pub fn new(srv: &Service, local: TcpStream, local_token: Token, interest: Ready) -> Self {
         Connection {
-            srv: srv.clone(),
+            srv,
             local,
             local_token,
             local_buf: StreamBuf::new(),
             local_interest: interest,
             remote: None,
-            remote_token: Token::from(usize::max_value()),
+            remote_token: Token::from(std::usize::MAX),
             remote_buf: StreamBuf::new(),
             remote_interest: Ready::empty(),
             stage: LocalConnected,
         }
     }
 
-    fn get_stream(&self, is_local_stream: bool) -> &TcpStream {
+    pub fn get_stream(&self, is_local_stream: bool) -> &TcpStream {
         if is_local_stream {
             &self.local
         } else {
@@ -321,7 +321,7 @@ impl Connection {
         }
     }
 
-    fn get_token(&self, is_local_stream: bool) -> Token {
+    pub fn get_token(&self, is_local_stream: bool) -> Token {
         if is_local_stream {
             self.local_token
         } else {
@@ -329,7 +329,15 @@ impl Connection {
         }
     }
 
-    fn get_interest(&self, is_local_stream: bool) -> Ready {
+    pub fn set_token(&mut self, token: Token, is_local_stream: bool) {
+        if is_local_stream {
+            self.local_token = token;
+        } else {
+            self.remote_token = token;
+        }
+    }
+
+    pub fn get_interest(&self, is_local_stream: bool) -> Ready {
         if is_local_stream {
             self.local_interest
         } else {
@@ -337,98 +345,61 @@ impl Connection {
         }
     }
 
-    fn set_interest(&mut self, poll: &Poll, interest: Ready, is_local_stream: bool) {
-        let current = if is_local_stream {
-            self.local_interest
+    pub fn set_remote_stream(&mut self, stream: TcpStream) {
+        assert!(self.remote.is_none());
+
+        self.remote = Some(stream);
+    }
+
+    pub fn set_interest(&mut self, interest: Ready, is_local_stream: bool) {
+        if is_local_stream {
+            self.local_interest = interest;
         } else {
-            self.remote_interest
-        };
-
-        if current == interest {
-            return;
-        }
-
-        if interest != Ready::empty() {
-            let result = poll.reregister(
-                self.get_stream(is_local_stream),
-                self.get_token(is_local_stream),
-                interest,
-                PollOpt::edge(),
-            );
-
-            match result {
-                Ok(()) => {
-                    if is_local_stream {
-                        self.local_interest = interest;
-                    } else {
-                        self.remote_interest = interest;
-                    }
-                }
-
-                Err(_) => {
-                    info!(
-                        "RE-register {} between ({:?} {:?}) <--> {:?}",
-                        if is_local_stream { "LOCAL" } else { "REMOTE" },
-                        self.local.peer_addr()?,
-                        self.local.local_addr()?,
-                        if let Some(ref remote) = self.remote {
-                            remote.local_addr()?
-                        } else {
-                            "*"
-                        }
-                    );
-                }
-            }
-        } else {
-            if is_local_stream {
-                self.local_interest = interest;
-            } else {
-                self.remote_interest = interest;
-            }
+            self.remote_interest = interest;
         }
     }
 
-    pub fn register(
-        &self,
-        poll: &mut Poll,
-        token: Token,
-        interest: mio::Ready,
-        is_local_stream: bool,
-    ) -> io::Result<()> {
-        poll.register(
-            self.get_stream(is_local_stream),
-            self.get_token(is_local_stream),
-            self.get_interest(is_local_stream),
-            PollOpt::edge(),
-        )
-    }
+    // pub fn register(
+    //     &self,
+    //     poll: &mut Poll,
+    //     token: Token,
+    //     interest: mio::Ready,
+    //     is_local_stream: bool,
+    // ) -> io::Result<()> {
+    //     poll.register(
+    //         self.get_stream(is_local_stream),
+    //         self.get_token(is_local_stream),
+    //         self.get_interest(is_local_stream),
+    //         PollOpt::edge(),
+    //     )
+    // }
+    //
+    // pub fn deregister(&mut self, poll: &mut Poll, is_local_stream: bool) {
+    //     let stream = self.get_stream(is_local_stream);
+    //     poll.deregister(stream);
+    //     self.local_token = Token(usize::max_value());
+    //     self.set_interest(Ready::readable(), is_local_stream);
+    // }
 
-    pub fn deregister(&mut self, poll: &mut Poll, is_local_stream: bool) {
-        let stream = self.get_stream(is_local_stream);
-        poll.deregister(stream);
-        self.local_token = Token(usize::max_value());
-        self.set_interest(poll, Ready::readable(), is_local_stream);
-    }
-
-    pub fn close(&self, poll: &Poll) {
+    pub fn shutdown(&self) {
         self.get_stream(LOCAL).shutdown(net::Shutdown::Both);
-        poll.deregister(self.get_stream(LOCAL));
+        self.srv.deregister_connection(self, LOCAL);
 
         if self.remote.is_some() {
             self.get_stream(REMOTE).shutdown(net::Shutdown::Both);
-            poll.deregister(self.get_stream(REMOTE));
+            self.srv.deregister_connection(self, REMOTE);
         }
     }
 
-    fn handle_local_events(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
+    fn handle_local_events(&mut self, ev: &mio::Event) -> Result<(), CliError> {
         let stream = self.get_stream(LOCAL);
         let buf = self.get_buf_mut(LOCAL);
-        if ev.is_readable() {
+        if ev.readiness().is_readable() {
             buf.read_from(stream)?;
             match self.stage {
                 LocalConnected => self.handle_local_auth_method(poll, ev),
             }
-        } else if ev.is_writeable() {
+        } else if ev.readiness().is_writable() {
             match self.stage {
                 WaitSndMethodSelReply => self.handle_local_snd_methodsel_reply(poll, ev),
             }
@@ -437,7 +408,7 @@ impl Connection {
         Ok(())
     }
 
-    fn handle_local_auth_method(&mut self, poll: &Poll, ev: &Event) -> Result<(), CliError> {
+    fn handle_local_auth_method(&mut self, ev: &Event) -> Result<(), CliError> {
         let buf = self.get_buf(LOCAL);
         if buf.payload_len() < METHOD_SELECT_HEAD_LEN {
             warn!(
@@ -468,8 +439,8 @@ impl Connection {
         }
 
         let mut method = Method::NO_ACCEPT_METHOD;
-        let sel = buf.peek(method_sel_len);
-        for pos in 0..nmethods {
+        let sel = buf.peek(method_sel_len)?;
+        for pos in 0..nmethods as usize {
             if sel[METHOD_SELECT_HEAD_LEN + pos] == Method::NO_AUTH {
                 method = Method::NO_AUTH;
                 break;
@@ -487,26 +458,23 @@ impl Connection {
 
         let local_stream = self.get_stream_mut(LOCAL);
         match local_stream.write(&no_auth) {
-            Err(e) if e.kind() == WouldBlock || e.kind() == Interrupted => {
-                self.set_interest(poll, Ready::writable(), LOCAL);
-                self.stage = SendMethodSelect;
-                Err(CliError::from(WouldBlock))
+            Err(e) => {
+                let err = CliError::from(e);
+                if err.is_wouldblock() {
+                    self.set_interest(Ready::writable(), LOCAL);
+                }
+
+                Err(err)
             }
 
             Ok(n) => {
                 self.stage = HandShake;
                 Ok(())
             }
-
-            Err(e) => Err(CliError::from(e)),
         }
     }
 
-    fn handle_local_snd_methodsel_reply(
-        &mut self,
-        poll: &Poll,
-        ev: mio::Event,
-    ) -> Result<(), CliError> {
+    fn handle_local_snd_methodsel_reply(&mut self, ev: &mio::Event) -> Result<(), CliError> {
         let no_auth = [SOCKS5_VERSION; 2];
         no_auth[1] = Method::NO_AUTH;
 
@@ -519,7 +487,7 @@ impl Connection {
             }).map_err(CliError::from)
     }
 
-    fn handle_handshake(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
+    fn handle_handshake(&mut self, ev: &mio::Event) -> Result<(), CliError> {
         let local_buf = self.get_buf(LOCAL);
         let head = local_buf.peek(4)?;
         let (ver, cmd, rsv, atpy) = (head[0], head[1], head[2], head[3]);
@@ -595,9 +563,12 @@ impl Connection {
 
             _ => {
                 let response = [SOCKS5_VERSION, ADDRTYPE_NOT_SUPPORTED, 0, V4];
-                self.write_buf_to(self.get_stream_mut(LOCAL), &response);
-
                 error!("notsupported addrtype {}", atpy);
+                let _ = self.get_stream_mut(LOCAL).write(&response).map_err(|e| {
+                    warn!("write ADDRTYPE_NOT_SUPPORTED failed: {}", e);
+
+                    Err(e)
+                });
 
                 return Err(CliError::from(ADDRTYPE_NOT_SUPPORTED));
             }
@@ -610,13 +581,21 @@ impl Connection {
 
                 TcpStream::connect(host.parse().unwrap())
                     .and_then(|sock| {
-                        let entry = self.conns.vacant_entry();
-                        let token = entry.key();
-                        self.remote = Some(sock);
-                        self.remote_token = token;
-                        self.remote_interest = Ready::readable();
-                        self.register(poll, token, Ready::readable(), REMOTE);
-                        self.deregister(poll, LOCAL);
+                        if let Err(e) = self.srv.register_remote_connection(sock, self) {
+                            debug!("register remote connection failed: {}", e);
+
+                            return Err(e);
+                        }
+
+                        if let Err(e) = self.srv.deregister_connection(self, LOCAL) {
+                            debug!(
+                                "deregister LOCAL connection failed when connecte to remote: {}",
+                                e
+                            );
+
+                            return Err(e);
+                        }
+
                         self.stage = RemoteConnecting;
 
                         Ok(())
@@ -639,59 +618,72 @@ impl Connection {
         poll: &mut Poll,
         ev: &mio::Event,
     ) -> Result<(), CliError> {
-        assert!(self.get_token(REMOTE), ev.token());
+        assert_eq!(self.get_token(REMOTE), ev.token());
 
         let remote_stream = self.get_stream(REMOTE);
         let sock_addr = remote_stream.local_addr()?;
         let port = sock_addr.port();
-        let write_result: io::Result<usize> = io::Result<usize>::default();
+        let mut write_result: io::Result<usize> = Ok(0);
+        let mut need_write_len: usize = 0;
         match sock_addr.ip() {
             IpAddr::V4(addr) => {
                 let response = [SOCKS5_VERSION, SUCCEEDED, 0, V4, 0, 0, 0, 0, 0, 0];
+                need_write_len = response.len();
                 &mut response[4..8].copy_from_slice(addr.octets());
-                
+
                 let bs: [u8; 2] = unsafe { mem::transmute::<u16, [u8; 2]>(port.to_be()) };
                 &mut response[8..].copy_from_slice(&bs);
-                write_result = self.get_stream(LOCAL).write(&response);
+                write_result = self.get_stream_mut(LOCAL).write(&response);
             }
 
             IpAddr::V6(addr) => {
                 let response = [SOCKS5_VERSION; 22];
+                need_write_len = response.len();
                 response[1] = SUCCEEDED;
                 response[2] = 0;
                 response[3] = V6;
                 &mut response[4..20].copy_from_slice(addr.octets());
                 response[20] = (port.to_be() >> 1) as u8;
                 response[22] = (port.to_be() & 0xff) as u8;
-                write_result = self.get_stream(LOCAL).write(&response);
+                write_result = self.get_stream_mut(LOCAL).write(&response);
             }
         }
-        
-        write_result.and_then(|| {
-            Ok(())
-        })
-            
-        
+
+        match write_result {
+            Ok(n) => {
+                if n != need_write_len {
+                    warn!("write {} bytes response to remote connect, need {} bytes, close connection.", n, need_write_len);
+
+                    Err(CliError::from(GENERAL_FAILURE));
+                } else {
+                    self.srv.register_connection(self, Ready::readable(), LOCAL);
+                    self.stage = Streaming;
+
+                    Ok(())
+                }
+            }
+
+            Err(e) => {
+                warn!("write response when remote connected failed: {}", e);
+
+                Err(CliError::from(GENERAL_FAILURE));
+            }
+        }
     }
 
-    fn handle_streaming(&mut self, poll: &mut Poll, ev: &mio::Event) -> Result<(), CliError> {
+    fn handle_streaming(&mut self, ev: &mio::Event) -> Result<(), CliError> {
         Ok(())
     }
 
-    pub fn handle_events(
-        &mut self,
-        poll: &mut Poll,
-        ev: &mio::Event,
-        token: Token,
-    ) -> Result<(), CliError> {
+    pub fn handle_events(&mut self, ev: &mio::Event) -> Result<(), CliError> {
         let result = match self.stage {
-            LocalConnected => self.handle_local_auth_method(poll, ev),
+            LocalConnected => self.handle_local_auth_method(ev),
 
-            WaitSndMethodSelReply => self.handle_local_snd_methodsel_reply(poll, ev),
+            WaitSndMethodSelReply => self.handle_local_snd_methodsel_reply(ev),
 
-            HandShake => self.handle_handshake(poll, ev),
+            HandShake => self.handle_handshake(ev),
 
-            Streaming => self.handle_streaming(poll, ev),
+            Streaming => self.handle_streaming(ev),
         };
 
         Ok(())

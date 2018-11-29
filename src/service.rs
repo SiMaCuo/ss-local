@@ -1,20 +1,20 @@
 use conn::*;
-use mio::net::TcpListener;
-use mio::{Events, Poll, PollOpt, Ready, Token};
+use mio::net::{TcpListener, TcpStream};
+use mio::{Evented, Events, Poll, PollOpt, Ready, Token};
 use slab::*;
-use std::io::{ErrorKind::*, Result};
+use std::io::{self, ErrorKind::*, Result};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time;
 
 const LISTENER: Token = Token(usize::max_value() - 1);
 
-pub struct Service {
-    conns: Slab<Connection>,
+pub struct Service<'a> {
+    conns: Slab<Connection<'a>>,
     p: Poll,
     evs: Events,
 }
 
-impl Service {
+impl<'a> Service<'a> {
     pub fn new() -> Self {
         Service {
             conns: Slab::with_capacity(1024),
@@ -28,42 +28,35 @@ impl Service {
         let listener = TcpListener::bind(&addr).unwrap();
         println!("Listening on: {}", addr);
 
-        self.poll
-            .regisert(&listener, LISTENER, Ready::readable(), PollOpt::edge())?;
+        self.p
+            .register(&listener, LISTENER, Ready::readable(), PollOpt::edge())?;
 
         let timeout = time::Duration::from_millis(500);
         loop {
             self.p.poll(&mut self.evs, Some(timeout))?;
 
-            for ev in &self.evs {
+            for ev in self.evs {
                 match ev.token() {
                     LISTENER => {
-                        self.accept();
+                        self.accept(&listener);
                     }
 
-                    _ => {
-                        let token = ev.token();
-                        let c = self.conns.get_mut(token).unwrap();
-                        c.handle_events(self.p, ev, token);
+                    token @ _ => {
+                        let c = self.conns.get_mut(token.0).unwrap();
+                        c.handle_events(&ev);
                     }
                 }
             }
         }
-
-        Ok(())
     }
 
     fn accept(&mut self, lis: &TcpListener) -> Result<()> {
         loop {
             match lis.accept() {
                 Ok((stream, addr)) => {
-                    println!("{:?} connected.", addr);
+                    info!("{:?} connected.", addr);
 
-                    let entry = self.conns.vacant_entry();
-                    let token = entry.key();
-                    let c = Connection::new(stream, token, Ready::readable());
-                    c.register(&mut self.p, LOCAL).unwrap();
-                    entry.insert(token, c);
+                    self.create_local_connection(stream);
                 }
 
                 Err(e) => {
@@ -77,32 +70,89 @@ impl Service {
         }
     }
 
-    fn close(&self, local_token: Token) -> Result<()> {
-        let c = match self.conns.get(local_token) {
-            Some(c) => c,
-            None => {
-                warn!("BUG->connection not find when try to close.");
-                return Ok(());
-            }
-        };
-        assert_eq!(local_token, c.get_token(LOCAL));
+    pub fn create_local_connection(&mut self, handle: TcpStream) -> Result<()> {
+        let entry = self.conns.vacant_entry();
+        let token = Token(entry.key());
 
-        c.close();
-        self.conns.remove(c.get_token(REMOTE));
-        self.conns.remove(c.get_token(LOCAL));
+        self.p
+            .register(&handle, token, Ready::readable(), PollOpt::edge())
+            .and_then(|_| {
+                let cnt = Connection::new(self, handle, token, Ready::readable());
 
-        Ok(())
+                Ok(())
+            })
     }
 
-    fn handle_events(&mut self, ev: &mio::Event) -> Result<()> {
-        let token = ev.token();
-        let c = self.conns.get_mut(token).unwrap();
-        if token == c.local_token {
-            c.handle_local_events(ev);
-        } else if token == c.remote_token.unwrap() {
-            c.handle_remote_events(ev);
-        } else {
-            unreachable!();
-        }
+    pub fn register_remote_connection(
+        &mut self,
+        handle: TcpStream,
+        cnt: &mut Connection,
+    ) -> Result<()> {
+        let entry = self.conns.vacant_entry();
+        let token = Token(entry.key());
+
+        self.p
+            .register(&handle, token, Ready::readable(), PollOpt::edge())
+            .and_then(|_| {
+                cnt.set_remote_stream(handle);
+                cnt.set_interest(Ready::readable(), LOCAL);
+                cnt.set_token(token, LOCAL);
+
+                Ok(())
+            })
+    }
+
+    pub fn register_connection(
+        &self,
+        cnt: &mut Connection,
+        interest: Ready,
+        is_local_stream: bool,
+    ) -> Result<()> {
+        let stream = cnt.get_stream(is_local_stream);
+        let token = cnt.get_token(is_local_stream);
+
+        self.p
+            .register(stream, token, interest, PollOpt::edge())
+            .and_then(|_| {
+                cnt.set_interest(interest, is_local_stream);
+
+                Ok(())
+            })
+    }
+
+    pub fn reregister_connection(
+        &self,
+        cnt: &mut Connection,
+        interest: Ready,
+        is_local_stream: bool,
+    ) -> Result<()> {
+        self.p
+            .reregister(
+                cnt.get_stream(is_local_stream),
+                cnt.get_token(is_local_stream),
+                interest,
+                PollOpt::edge(),
+            ).and_then(|_| {
+                cnt.set_interest(interest, is_local_stream);
+
+                Ok(())
+            })
+    }
+
+    pub fn deregister_connection(&mut self, cnt: &Connection, is_local_stream: bool) -> Result<()> {
+        let stream = cnt.get_stream(is_local_stream);
+
+        self.p.deregister(stream)
+    }
+
+    fn close_connection(&self, cnt: &mut Connection) -> Result<()> {
+        cnt.shutdown();
+
+        self.conns.remove(cnt.get_token(LOCAL).0);
+        cnt.set_token(Token(std::usize::MAX), LOCAL);
+        self.conns.remove(cnt.get_token(REMOTE).0);
+        cnt.set_token(Token(std::usize::MAX), REMOTE);
+
+        Ok(())
     }
 }
