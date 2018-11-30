@@ -202,11 +202,7 @@ impl StreamBuf {
 
                 Err(e) => {
                     if e.kind() == WouldBlock || e.kind() == Interrupted {
-                        if total_read_len > 0 {
-                            return Ok(total_read_len);
-                        } else {
-                            return Err(CliError::from(WouldBlock));
-                        }
+                        return Err(CliError::from(WouldBlock));
                     } else {
                         return Err(CliError::from(e));
                     }
@@ -305,6 +301,12 @@ impl<'a> Connection<'a> {
         }
     }
 
+    pub fn set_remote_stream(&mut self, stream: TcpStream) {
+        assert!(self.remote.is_none());
+
+        self.remote = Some(stream);
+    }
+
     fn get_buf(&self, is_local_stream: bool) -> &StreamBuf {
         if is_local_stream {
             &self.local_buf
@@ -345,12 +347,6 @@ impl<'a> Connection<'a> {
         }
     }
 
-    pub fn set_remote_stream(&mut self, stream: TcpStream) {
-        assert!(self.remote.is_none());
-
-        self.remote = Some(stream);
-    }
-
     pub fn set_interest(&mut self, interest: Ready, is_local_stream: bool) {
         if is_local_stream {
             self.local_interest = interest;
@@ -358,28 +354,6 @@ impl<'a> Connection<'a> {
             self.remote_interest = interest;
         }
     }
-
-    // pub fn register(
-    //     &self,
-    //     poll: &mut Poll,
-    //     token: Token,
-    //     interest: mio::Ready,
-    //     is_local_stream: bool,
-    // ) -> io::Result<()> {
-    //     poll.register(
-    //         self.get_stream(is_local_stream),
-    //         self.get_token(is_local_stream),
-    //         self.get_interest(is_local_stream),
-    //         PollOpt::edge(),
-    //     )
-    // }
-    //
-    // pub fn deregister(&mut self, poll: &mut Poll, is_local_stream: bool) {
-    //     let stream = self.get_stream(is_local_stream);
-    //     poll.deregister(stream);
-    //     self.local_token = Token(usize::max_value());
-    //     self.set_interest(Ready::readable(), is_local_stream);
-    // }
 
     pub fn shutdown(&self) {
         self.get_stream(LOCAL).shutdown(net::Shutdown::Both);
@@ -672,7 +646,28 @@ impl<'a> Connection<'a> {
     }
 
     fn handle_streaming(&mut self, ev: &mio::Event) -> Result<(), CliError> {
-        Ok(())
+        let token = ev.token();
+        if ev.readiness().is_readable() {
+            if token == self.get_token(LOCAL) {
+                let remote_buf = self.get_buf_mut(REMOTE);
+                match remote_buf.read_from(self.get_stream_mut(LOCAL)) {
+                    Ok(n) || Err(err) if err.is_wouldblock() => {
+                        remote_buf.write_to(self.get_stream_mut(REMOTE)).
+
+            } else if token == self.get_token(REMOTE) {
+
+            } else {
+                unreachable!();
+            }
+        } else if ev.readiness().is_writable() {
+            if token == self.get_token(LOCAL) {
+
+            } else if token == self.get_token(REMOTE) {
+
+            } else {
+                unreachable!();
+            }
+        }
     }
 
     pub fn handle_events(&mut self, ev: &mio::Event) -> Result<(), CliError> {
