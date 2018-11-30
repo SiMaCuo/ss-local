@@ -2,7 +2,7 @@ use conn::*;
 use mio::net::{TcpListener, TcpStream};
 use mio::{Evented, Events, Poll, PollOpt, Ready, Token};
 use slab::*;
-use std::io::{self, ErrorKind::*, Result};
+use std::io::{ErrorKind::*, Result};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time;
 
@@ -126,21 +126,24 @@ impl<'a> Service<'a> {
         interest: Ready,
         is_local_stream: bool,
     ) -> Result<()> {
-        self.p
-            .reregister(
-                cnt.get_stream(is_local_stream),
-                cnt.get_token(is_local_stream),
-                interest,
-                PollOpt::edge(),
-            ).and_then(|_| {
-                cnt.set_interest(interest, is_local_stream);
+        if cnt.get_interest(is_local_stream) != interest {
+            self.p
+                .reregister(
+                    cnt.get_stream(is_local_stream),
+                    cnt.get_token(is_local_stream),
+                    interest,
+                    PollOpt::edge(),
+                ).and_then(|_| {
+                    cnt.set_interest(interest, is_local_stream);
+                });
+        }
 
-                Ok(())
-            })
+        Ok(())
     }
 
-    pub fn deregister_connection(&mut self, cnt: &Connection, is_local_stream: bool) -> Result<()> {
+    pub fn deregister_connection(&self, cnt: &mut Connection, is_local_stream: bool) -> Result<()> {
         let stream = cnt.get_stream(is_local_stream);
+        cnt.set_interest(Ready::empty(), is_local_stream);
 
         self.p.deregister(stream)
     }

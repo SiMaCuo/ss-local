@@ -13,6 +13,14 @@ pub const REMOTE: bool = false;
 pub const REREGISTER: bool = true;
 pub const REGISTER: bool = false;
 
+fn is_wouldblock(e: &io::Error) -> bool {
+    if e.kind() == WouldBlock || e.kind() == Interrupted {
+        return true;
+    }
+
+    return false;
+}
+
 struct StreamBuf {
     buf: Vec<u8>,
     pos: usize,
@@ -127,54 +135,59 @@ impl StreamBuf {
         self.pos = 0;
     }
 
-    pub fn write_buf_to<W: Write + Debug>(
-        &mut self,
-        buf: &[u8],
-        w: &mut W,
-    ) -> Result<usize, CliError> {
+    pub fn write_buf_to<W: Write + Debug>(&mut self, buf: &[u8], w: &mut W) -> io::Result<usize> {
         if self.payload_len() > 0 {
             let n = self.write(buf).unwrap();
 
-            self.write_to(w).and_then(|_| Ok(n))
+            self.write_to(w)
         } else {
-            w.write(buf).map_err(|e| CliError::from(e)).and_then(|n| {
+            w.write(buf).and_then(|n| {
                 if n < buf.len() {
                     self.write(buf[n..]);
                 }
-                Err(CliError::from(WouldBlock))
+
+                Ok(n)
             })
         }
     }
 
-    pub fn write_to<W: Write + Debug>(&mut self, w: &mut W) -> Result<usize, CliError> {
-        let result = w.write(&self.buf[self.pos..self.buf.len()]);
-        match result {
-            Ok(n) if n > 0 => {
-                self.pos += n;
-                if self.payload_len() == 0 {
-                    self.pos = 0;
-                    unsafe {
-                        self.buf.set_len(0);
+    pub fn write_to<W: Write + Debug>(&mut self, w: &mut W) -> io::Result<usize> {
+        if self.payload_len() == 0 {
+            return Ok(0);
+        }
+
+        let mut total_write_len: usize = 0;
+        loop {
+            let result = w.write(&self.buf[self.pos..self.buf.len()]);
+            match result {
+                Ok(n) => {
+                    total_write_len += n;
+                    self.pos += n;
+                    if self.payload_len() == 0 {
+                        self.pos = 0;
+                        unsafe {
+                            self.buf.set_len(0);
+                        }
+
+                        return Ok(total_write_len);
+                    }
+
+                    if n == 0 {
+                        info!(
+                            "{:?} write to {:?} 0 bytes, maybe this connection is closed by peer.",
+                            self, w
+                        );
+
+                        return Ok(total_write_len);
                     }
                 }
 
-                Ok(n)
+                Err(e) => return Err(e),
             }
-
-            Ok(0) => {
-                info!(
-                    "{:?} write to {:?} 0 bytes, maybe this connection is closed by peer.",
-                    self, w
-                );
-
-                Err(CliError::from(WouldBlock))
-            }
-
-            Err(e) => Err(CliError::from(e)),
         }
     }
 
-    pub fn read_from<R: Read>(&mut self, r: &mut R) -> Result<usize, CliError> {
+    pub fn read_from<R: Read>(&mut self, r: &mut R) -> io::Result<usize> {
         let total_read_len: usize = 0;
         loop {
             let mut vacant_len = self.vacant_len();
@@ -189,22 +202,18 @@ impl StreamBuf {
             let result = r.read(&mut self.buf[self.buf.len()..self.buf.capacity()]);
             match result {
                 Ok(n) => {
-                    if n > 0 {
-                        total_read_len += n;
-                    } else if n == 0 {
-                        if total_read_len == 0 {
-                            return Err(CliError::from(UnexpectedEof));
-                        } else {
-                            return Ok(total_read_len);
-                        }
+                    total_read_len += n;
+
+                    if n == 0 {
+                        return Ok(total_read_len);
                     }
                 }
 
                 Err(e) => {
-                    if e.kind() == WouldBlock || e.kind() == Interrupted {
-                        return Err(CliError::from(WouldBlock));
+                    if total_read_len > 0 {
+                        return Ok(total_read_len);
                     } else {
-                        return Err(CliError::from(e));
+                        return Err(e);
                     }
                 }
             }
@@ -355,7 +364,7 @@ impl<'a> Connection<'a> {
         }
     }
 
-    pub fn shutdown(&self) {
+    pub fn shutdown(&mut self) {
         self.get_stream(LOCAL).shutdown(net::Shutdown::Both);
         self.srv.deregister_connection(self, LOCAL);
 
@@ -363,23 +372,6 @@ impl<'a> Connection<'a> {
             self.get_stream(REMOTE).shutdown(net::Shutdown::Both);
             self.srv.deregister_connection(self, REMOTE);
         }
-    }
-
-    fn handle_local_events(&mut self, ev: &mio::Event) -> Result<(), CliError> {
-        let stream = self.get_stream(LOCAL);
-        let buf = self.get_buf_mut(LOCAL);
-        if ev.readiness().is_readable() {
-            buf.read_from(stream)?;
-            match self.stage {
-                LocalConnected => self.handle_local_auth_method(poll, ev),
-            }
-        } else if ev.readiness().is_writable() {
-            match self.stage {
-                WaitSndMethodSelReply => self.handle_local_snd_methodsel_reply(poll, ev),
-            }
-        }
-
-        Ok(())
     }
 
     fn handle_local_auth_method(&mut self, ev: &Event) -> Result<(), CliError> {
@@ -524,7 +516,7 @@ impl<'a> Connection<'a> {
                 segments
                     .as_mut()
                     .copy_from_slice(bs[CMD_HEAD_LEN..CMD_HEAD_LEN + 16]);
-                addr = net::Ipv6Addr::from(segments);
+                addr = net::Ipv6Addr::from(segments).to_string();
                 port = unsafe {
                     u16::from_be(mem::transmute::<[u8; 2], u16>([
                         bs[CMD_IPV6_LEN - 2],
@@ -587,11 +579,7 @@ impl<'a> Connection<'a> {
         }
     }
 
-    fn handle_remote_connected(
-        &mut self,
-        poll: &mut Poll,
-        ev: &mio::Event,
-    ) -> Result<(), CliError> {
+    fn handle_remote_connected(&mut self, ev: &mio::Event) -> Result<(), CliError> {
         assert_eq!(self.get_token(REMOTE), ev.token());
 
         let remote_stream = self.get_stream(REMOTE);
@@ -651,19 +639,131 @@ impl<'a> Connection<'a> {
             if token == self.get_token(LOCAL) {
                 let remote_buf = self.get_buf_mut(REMOTE);
                 match remote_buf.read_from(self.get_stream_mut(LOCAL)) {
-                    Ok(n) || Err(err) if err.is_wouldblock() => {
-                        remote_buf.write_to(self.get_stream_mut(REMOTE)).
+                    Ok(read_len) => {
+                        if read_len == 0 {
+                            return Err(CliError::from(UnexpectedEof));
+                        }
 
+                        match remote_buf.write_to(self.get_stream_mut(REMOTE)) {
+                            Ok(write_len) => {
+                                if write_len != read_len {
+                                    if self.get_interest(REMOTE) != Ready::empty() {
+                                        return self
+                                            .srv
+                                            .reregister_connection(
+                                                self,
+                                                self.get_interest(REMOTE) | Ready::writable(),
+                                                REMOTE,
+                                            ).map_err(CliError::from);
+                                    } else {
+                                        return self
+                                            .srv
+                                            .register_connection(self, Ready::writable(), REMOTE)
+                                            .map_err(CliError::from);
+                                    }
+                                }
+
+                                return Ok(());
+                            }
+
+                            Err(e) => {
+                                return Err(CliError::from(e));
+                            }
+                        }
+                    }
+                }
             } else if token == self.get_token(REMOTE) {
+                let local_buf = self.get_buf_mut(LOCAL);
+                match local_buf.read_from(self.get_stream_mut(REMOTE)) {
+                    Ok(n) | Err(err_read) if is_wouldblock(err_read) => {
+                        if let Err(err_write) = local_buf.write_to(self.get_stream_mut(LOCAL)) {
+                            if is_wouldblock(err_write) {
+                                if self.get_interest(LOCAL) != Ready::empty() {
+                                    self.srv
+                                        .reregister_connection(
+                                            self,
+                                            self.get_interest(LOCAL) | Ready::writable(),
+                                            LOCAL,
+                                        ).map_err(CliError::from)
+                                } else {
+                                    self.srv
+                                        .register_connection(self, Ready::writable(), REMOTE)
+                                        .map_err(CliError::from)
+                                }
+                            }
+                        }
+                    }
 
+                    Err(e) => {
+                        return Err(CliError::from(e));
+                    }
+                }
             } else {
                 unreachable!();
             }
         } else if ev.readiness().is_writable() {
             if token == self.get_token(LOCAL) {
+                let remote_buf = self.get_buf_mut(REMOTE);
+                let total_payload_len = remote_buf.payload_len();
+                if total_payload_len == 0 {
+                    return self
+                        .srv
+                        .reregister_connection(self, Ready::readable(), LOCAL)
+                        .map_err(CliError::from);
+                }
 
+                let local_stream = self.get_stream_mut(LOCAL);
+                match remote_buf.write_to(local_stream) {
+                    Ok(n) => {
+                        if n == total_payload_len {
+                            return self
+                                .srv
+                                .reregister_connection(self, Ready::readable(), LOCAL)
+                                .map_err(CliError::from);
+                        }
+
+                        return Ok(());
+                    }
+
+                    Err(e) => {
+                        if is_wouldblock(&e) {
+                            return Ok(());
+                        }
+
+                        return Err(CliError::from(e));
+                    }
+                }
             } else if token == self.get_token(REMOTE) {
+                let local_buf = self.get_buf_mut(LOCAL);
+                let total_payload_len = local_buf.payload_len();
+                if total_payload_len == 0 {
+                    return self
+                        .srv
+                        .reregister_connection(self, Ready::readable(), REMOTE)
+                        .map_err(CliError::from);
+                }
 
+                let remote_stream = self.get_stream_mut(REMOTE);
+                match local_buf.write_to(remote_stream) {
+                    Ok(n) => {
+                        if n == total_payload_len {
+                            return self
+                                .srv
+                                .reregister_connection(self, Ready::readable(), REMOTE)
+                                .map_err(CliError::from);
+                        }
+
+                        return Ok(());
+                    }
+
+                    Err(e) => {
+                        if is_wouldblock(&e) {
+                            return Ok(());
+                        }
+
+                        return Err(CliError::from(e));
+                    }
+                }
             } else {
                 unreachable!();
             }
@@ -674,9 +774,11 @@ impl<'a> Connection<'a> {
         let result = match self.stage {
             LocalConnected => self.handle_local_auth_method(ev),
 
-            WaitSndMethodSelReply => self.handle_local_snd_methodsel_reply(ev),
+            SendMethodSelect => self.handle_local_snd_methodsel_reply(ev),
 
             HandShake => self.handle_handshake(ev),
+
+            RemoteConnecting => self.handle_remote_connected(ev),
 
             Streaming => self.handle_streaming(ev),
         };

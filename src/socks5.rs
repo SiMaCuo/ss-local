@@ -8,8 +8,6 @@ pub enum Stage {
     LocalConnected,
     SendMethodSelect,
     HandShake,
-    WaitSndReply,
-    Http,
     RemoteConnecting,
     Streaming,
 }
