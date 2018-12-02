@@ -1,4 +1,4 @@
-use socks5::*;
+use super::socks5::*;
 use std::io::{self, ErrorKind::*};
 use std::{error::Error, fmt};
 
@@ -23,7 +23,7 @@ use self::BufError::*;
 impl CliError {
     pub fn is_wouldblock(&self) -> bool {
         match *self {
-            StdIo(e) if e.kind() == WouldBlock || e.kind() == Interrupted => true,
+            StdIo(ref e) if e.kind() == WouldBlock || e.kind() == Interrupted => true,
             _ => false,
         }
     }
@@ -43,6 +43,7 @@ impl fmt::Display for CliError {
                 Rep::CMD_NOT_SUPPORTED => write!(f, "command not supported"),
                 Rep::ADDRTYPE_NOT_SUPPORTED => write!(f, "address type not supported"),
                 Method::NO_ACCEPT_METHOD => write!(f, "no acceptable methods"),
+                _ => unreachable!(),
             },
             Buf(ref e) => match *e {
                 Empty => write!(f, "buffer has no data"),
@@ -55,7 +56,7 @@ impl fmt::Display for CliError {
 
 impl Error for CliError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self
+        Some(self)
     }
 }
 

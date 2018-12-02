@@ -1,7 +1,7 @@
-#[macro_use]
-extern crate log;
-extern crate mio;
-extern crate slab;
+// #[macro_use]
+// extern crate log;
+// extern crate mio;
+// extern crate slab;
 
 pub mod conn;
 pub mod err;

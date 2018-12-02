@@ -1,20 +1,22 @@
-use conn::*;
+use super::conn::*;
 use mio::net::{TcpListener, TcpStream};
-use mio::{Evented, Events, Poll, PollOpt, Ready, Token};
+use mio::{Events, Poll, PollOpt, Ready, Token};
 use slab::*;
 use std::io::{ErrorKind::*, Result};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time;
+#[macro_use]
+use log::*;
 
 const LISTENER: Token = Token(usize::max_value() - 1);
 
-pub struct Service<'a> {
-    conns: Slab<Connection<'a>>,
+pub struct Service<'s> {
+    conns: Slab<Connection<'s>>,
     p: Poll,
     evs: Events,
 }
 
-impl<'a> Service<'a> {
+impl<'s> Service<'s> {
     pub fn new() -> Self {
         Service {
             conns: Slab::with_capacity(1024),
@@ -23,7 +25,7 @@ impl<'a> Service<'a> {
         }
     }
 
-    pub fn serve(&mut self) -> Result<()> {
+    pub fn serve(&'s mut self) -> Result<()> {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 18109);
         let listener = TcpListener::bind(&addr).unwrap();
         println!("Listening on: {}", addr);
@@ -50,7 +52,7 @@ impl<'a> Service<'a> {
         }
     }
 
-    fn accept(&mut self, lis: &TcpListener) -> Result<()> {
+    fn accept(&'s mut self, lis: &TcpListener) -> Result<()> {
         loop {
             match lis.accept() {
                 Ok((stream, addr)) => {
@@ -70,7 +72,7 @@ impl<'a> Service<'a> {
         }
     }
 
-    pub fn create_local_connection(&mut self, handle: TcpStream) -> Result<()> {
+    pub fn create_local_connection(&'s mut self, handle: TcpStream) -> Result<()> {
         let entry = self.conns.vacant_entry();
         let token = Token(entry.key());
 
@@ -78,6 +80,7 @@ impl<'a> Service<'a> {
             .register(&handle, token, Ready::readable(), PollOpt::edge())
             .and_then(|_| {
                 let cnt = Connection::new(self, handle, token, Ready::readable());
+                entry.insert(cnt);
 
                 Ok(())
             })
@@ -135,6 +138,7 @@ impl<'a> Service<'a> {
                     PollOpt::edge(),
                 ).and_then(|_| {
                     cnt.set_interest(interest, is_local_stream);
+                    Ok(())
                 });
         }
 
@@ -142,9 +146,9 @@ impl<'a> Service<'a> {
     }
 
     pub fn deregister_connection(&self, cnt: &mut Connection, is_local_stream: bool) -> Result<()> {
-        let stream = cnt.get_stream(is_local_stream);
         cnt.set_interest(Ready::empty(), is_local_stream);
 
+        let stream = cnt.get_stream(is_local_stream);
         self.p.deregister(stream)
     }
 
