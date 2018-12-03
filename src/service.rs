@@ -13,7 +13,6 @@ const LISTENER: Token = Token(usize::max_value() - 1);
 pub struct Service<'s> {
     conns: Slab<Connection<'s>>,
     p: Poll,
-    evs: Events,
 }
 
 impl<'s> Service<'s> {
@@ -21,7 +20,6 @@ impl<'s> Service<'s> {
         Service {
             conns: Slab::with_capacity(1024),
             p: Poll::new().unwrap(),
-            evs: Events::with_capacity(1024),
         }
     }
 
@@ -34,10 +32,11 @@ impl<'s> Service<'s> {
             .register(&listener, LISTENER, Ready::readable(), PollOpt::edge())?;
 
         let timeout = time::Duration::from_millis(500);
+        let mut evs = Events::with_capacity(1024);
         loop {
-            self.p.poll(&mut self.evs, Some(timeout))?;
+            self.p.poll(&mut evs, Some(timeout))?;
 
-            for ev in self.evs {
+            for ev in &evs {
                 match ev.token() {
                     LISTENER => {
                         self.accept(&listener);
@@ -89,7 +88,7 @@ impl<'s> Service<'s> {
     pub fn register_remote_connection(
         &mut self,
         handle: TcpStream,
-        cnt: &mut Connection,
+        cnt: &mut Connection<'s>,
     ) -> Result<()> {
         let entry = self.conns.vacant_entry();
         let token = Token(entry.key());
@@ -100,6 +99,7 @@ impl<'s> Service<'s> {
                 cnt.set_remote_stream(handle);
                 cnt.set_interest(Ready::readable(), LOCAL);
                 cnt.set_token(token, LOCAL);
+                entry.insert(*cnt);
 
                 Ok(())
             })
@@ -145,10 +145,7 @@ impl<'s> Service<'s> {
         Ok(())
     }
 
-    pub fn deregister_connection(&self, cnt: &mut Connection, is_local_stream: bool) -> Result<()> {
-        cnt.set_interest(Ready::empty(), is_local_stream);
-
-        let stream = cnt.get_stream(is_local_stream);
+    pub fn deregister_connection(&self, stream: &TcpStream) -> Result<()> {
         self.p.deregister(stream)
     }
 

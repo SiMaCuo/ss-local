@@ -276,7 +276,7 @@ impl Write for StreamBuf {
 }
 
 pub struct Connection<'c> {
-    srv: &'c Service<'c>,
+    srv: &'c mut Service<'c>,
     local: TcpStream,
     local_token: Token,
     local_buf: StreamBuf,
@@ -289,7 +289,7 @@ pub struct Connection<'c> {
 }
 
 impl<'c> Connection<'c> {
-    pub fn new(srv: &'c Service, local: TcpStream, local_token: Token, interest: Ready) -> Self {
+    pub fn new(srv: &'c mut Service<'c>, local: TcpStream, local_token: Token, interest: Ready) -> Self {
         Connection {
             srv,
             local,
@@ -383,12 +383,16 @@ impl<'c> Connection<'c> {
     }
 
     pub fn shutdown(&mut self) {
-        self.get_stream(LOCAL).shutdown(net::Shutdown::Both);
-        self.srv.deregister_connection(self, LOCAL);
-
+        self.set_interest(Ready::empty(), LOCAL);
+        let local_stream = self.get_stream(LOCAL);
+        local_stream.shutdown(net::Shutdown::Both);
+        self.srv.deregister_connection(local_stream);
+        
+        self.set_interest(Ready::empty(), REMOTE);
         if self.remote.is_some() {
-            self.get_stream(REMOTE).shutdown(net::Shutdown::Both);
-            self.srv.deregister_connection(self, REMOTE);
+            let remote_stream = self.get_stream(REMOTE);
+            remote_stream.shutdown(net::Shutdown::Both);
+            self.srv.deregister_connection(remote_stream);
         }
     }
 
@@ -459,10 +463,9 @@ impl<'c> Connection<'c> {
     }
 
     fn handle_local_snd_methodsel_reply(&mut self) -> Result<(), CliError> {
-        let mut no_auth = [SOCKS5_VERSION, Method::NO_AUTH];
+        let no_auth = [SOCKS5_VERSION, Method::NO_AUTH];
 
-        let local_stream = self.get_stream_mut(LOCAL);
-        local_stream
+        self.get_stream_mut(LOCAL)
             .write(&no_auth)
             .and_then(|_| {
                 self.stage = HandShake;
@@ -568,13 +571,15 @@ impl<'c> Connection<'c> {
                             return Err(e);
                         }
 
-                        if let Err(e) = self.srv.deregister_connection(self, LOCAL) {
+                        if let Err(e) = self.srv.deregister_connection(self.get_stream(LOCAL)) {
                             debug!(
                                 "deregister LOCAL connection failed when connecte to remote: {}",
                                 e
                             );
 
                             return Err(e);
+                        } else {
+                            self.set_interest(Ready::empty(), LOCAL);
                         }
 
                         self.stage = RemoteConnecting;
@@ -600,8 +605,10 @@ impl<'c> Connection<'c> {
         let remote_stream = self.get_stream(REMOTE);
         let sock_addr = remote_stream.local_addr()?;
         let port = sock_addr.port();
+        #[allow(unused_assignments)]
         let mut write_result: io::Result<usize> = Ok(0);
-        let mut need_write_len: usize = 0;
+        #[allow(unused_assignments)]
+        let mut need_write_len: usize = usize::default();
         match sock_addr.ip() {
             IpAddr::V4(addr) => {
                 let mut response = [SOCKS5_VERSION, SUCCEEDED, 0, V4, 0, 0, 0, 0, 0, 0];
