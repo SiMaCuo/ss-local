@@ -124,7 +124,7 @@ impl StreamBuf {
         }
 
         let len = self.payload_len();
-        let src = self.buf.as_ptr().add(self.pos);
+        let src = unsafe { self.buf.as_ptr().add(self.pos) };
         let dst = self.buf.as_mut_ptr();
         unsafe {
             if len < self.head_vacant_len() {
@@ -312,18 +312,6 @@ impl Connection {
         }
     }
 
-    fn get_stream_mut(&mut self, is_local_stream: bool) -> &mut TcpStream {
-        if is_local_stream {
-            &mut self.local
-        } else {
-            match self.remote {
-                Some(ref mut s) => s,
-
-                None => unimplemented!(),
-            }
-        }
-    }
-
     pub fn set_remote_stream(&mut self, stream: TcpStream) {
         assert!(self.remote.is_none());
 
@@ -335,14 +323,6 @@ impl Connection {
             &self.local_buf
         } else {
             &self.remote_buf
-        }
-    }
-
-    fn get_buf_mut(&mut self, is_local_stream: bool) -> &mut StreamBuf {
-        if is_local_stream {
-            &mut self.local_buf
-        } else {
-            &mut self.remote_buf
         }
     }
 
@@ -431,7 +411,7 @@ impl Connection {
             }
         }
 
-        self.get_buf_mut(LOCAL).consume(method_sel_len);
+        &mut self.local_buf.consume(method_sel_len);
 
         if method != Method::NO_AUTH {
             return Err(CliError::from(Method::NO_ACCEPT_METHOD));
@@ -440,7 +420,7 @@ impl Connection {
         let mut no_auth = [SOCKS5_VERSION; 2];
         no_auth[1] = Method::NO_AUTH;
 
-        let local_stream = self.get_stream_mut(LOCAL);
+        let local_stream = &mut self.local;
         match local_stream.write(&no_auth) {
             Err(e) => {
                 let err = CliError::from(e);
@@ -461,7 +441,7 @@ impl Connection {
     fn handle_local_snd_methodsel_reply(&mut self) -> Result<(), CliError> {
         let no_auth = [SOCKS5_VERSION, Method::NO_AUTH];
 
-        self.get_stream_mut(LOCAL)
+        (&mut self.local)
             .write(&no_auth)
             .and_then(|_| {
                 self.stage = HandShake;
@@ -473,10 +453,9 @@ impl Connection {
     fn handle_handshake(
         &mut self,
         poll: &Poll,
-        cnts: &mut Slab<Connection>,
+        conns: &mut Slab<Connection>,
     ) -> Result<(), CliError> {
-        let local_buf = self.get_buf(LOCAL);
-        let head = local_buf.peek(4)?;
+        let head = self.local_buf.peek(4)?;
         let (ver, cmd, _, atpy) = (head[0], head[1], head[2], head[3]);
         if ver != SOCKS5_VERSION {
             return Err(CliError::from(Rep::GENERAL_FAILURE));
@@ -486,11 +465,11 @@ impl Connection {
         let mut port: u16 = u16::max_value();
         match atpy {
             AddrType::V4 => {
-                if local_buf.payload_len() < CMD_IPV4_LEN {
+                if self.local_buf.payload_len() < CMD_IPV4_LEN {
                     return Err(CliError::from(WouldBlock));
                 }
 
-                let bs = local_buf.peek(CMD_IPV4_LEN)?;
+                let bs = self.local_buf.peek(CMD_IPV4_LEN)?;
                 addr = net::Ipv4Addr::new(
                     bs[CMD_HEAD_LEN],
                     bs[CMD_HEAD_LEN + 1],
@@ -500,21 +479,21 @@ impl Connection {
                 .to_string();
                 port = unsafe { u16::from_be(mem::transmute::<[u8; 2], u16>([bs[8], bs[9]])) };
 
-                self.get_buf_mut(LOCAL).consume(CMD_IPV4_LEN);
+                (&mut self.local_buf).consume(CMD_IPV4_LEN);
             }
 
             AddrType::DOMAIN => {
-                if local_buf.payload_len() < CMD_HEAD_LEN + 1 {
+                if self.local_buf.payload_len() < CMD_HEAD_LEN + 1 {
                     return Err(CliError::from(WouldBlock));
                 }
 
-                let domain_len = usize::from(local_buf.get_u8_unchecked(CMD_HEAD_LEN));
+                let domain_len = usize::from(self.local_buf.get_u8_unchecked(CMD_HEAD_LEN));
                 let total_len = CMD_HEAD_LEN + 1 + domain_len + 2;
-                if local_buf.payload_len() < total_len {
+                if self.local_buf.payload_len() < total_len {
                     return Err(CliError::from(WouldBlock));
                 }
 
-                let bs = local_buf.peek(total_len)?;
+                let bs = self.local_buf.peek(total_len)?;
                 addr = str::from_utf8(&bs[CMD_HEAD_LEN + 1..total_len - 2])
                     .unwrap()
                     .to_string();
@@ -525,15 +504,15 @@ impl Connection {
                     ]))
                 };
 
-                self.get_buf_mut(REMOTE).consume(total_len);
+                (&mut self.remote_buf).consume(total_len);
             }
 
             AddrType::V6 => {
-                if local_buf.payload_len() < CMD_IPV6_LEN {
+                if self.local_buf.payload_len() < CMD_IPV6_LEN {
                     return Err(CliError::from(WouldBlock));
                 }
 
-                let bs = local_buf.peek(CMD_IPV6_LEN)?;
+                let bs = self.local_buf.peek(CMD_IPV6_LEN)?;
                 let mut segments = [0u8; 16];
                 segments
                     .as_mut()
@@ -546,13 +525,13 @@ impl Connection {
                     ]))
                 };
 
-                self.get_buf_mut(LOCAL).consume(CMD_IPV6_LEN);
+                self.local_buf.consume(CMD_IPV6_LEN);
             }
 
             _ => {
                 let response = [SOCKS5_VERSION, ADDRTYPE_NOT_SUPPORTED, 0, V4];
                 error!("notsupported addrtype {}", atpy);
-                self.get_stream_mut(LOCAL).write(&response).map_err(|e| {
+                self.local_buf.write(&response).map_err(|e| {
                     warn!("write ADDRTYPE_NOT_SUPPORTED failed: {}", e);
 
                     CliError::from(GENERAL_FAILURE)
@@ -567,7 +546,7 @@ impl Connection {
 
                 TcpStream::connect(&host.parse().unwrap())
                     .and_then(|sock| {
-                        let entry = cnts.vacant_entry();
+                        let entry = conns.vacant_entry();
                         let token = Token(entry.key());
 
                         poll.register(&sock, token, Ready::readable(), PollOpt::edge())
@@ -605,7 +584,7 @@ impl Connection {
 
             _ => {
                 let response = [SOCKS5_VERSION, CMD_NOT_SUPPORTED, 0, V4];
-                self.get_stream_mut(LOCAL).write(&response).unwrap();
+                self.local_buf.write(&response).unwrap();
 
                 error!("notsupported command {}", cmd);
 
@@ -632,7 +611,7 @@ impl Connection {
 
                 let bs: [u8; 2] = unsafe { mem::transmute::<u16, [u8; 2]>(port.to_be()) };
                 &mut response[8..].copy_from_slice(&bs);
-                write_result = self.get_stream_mut(LOCAL).write(&response);
+                write_result = (&mut self.local_buf).write(&response);
             }
 
             IpAddr::V6(addr) => {
@@ -644,7 +623,7 @@ impl Connection {
                 &mut response[4..20].copy_from_slice(&addr.octets());
                 response[20] = (port.to_be() >> 1) as u8;
                 response[22] = (port.to_be() & 0xff) as u8;
-                write_result = self.get_stream_mut(LOCAL).write(&response);
+                write_result = (&mut self.local_buf).write(&response);
             }
         }
 
@@ -746,14 +725,14 @@ impl Connection {
                     }
                 }
             } else if token == self.get_token(REMOTE) {
-                let local_buf = self.get_buf_mut(LOCAL);
-                match local_buf.read_from(self.get_stream_mut(REMOTE)) {
+                let local_buf = &mut self.local_buf;
+                match local_buf.read_from(self.remote.as_mut().unwrap()) {
                     Ok(read_len) => {
                         if read_len == 0 {
                             return Err(CliError::from(UnexpectedEof));
                         }
 
-                        match local_buf.write_to(self.get_stream_mut(LOCAL)) {
+                        match local_buf.write_to(&mut self.local) {
                             Ok(write_len) => {
                                 if write_len != read_len {
                                     if self.get_interest(LOCAL) != Ready::empty() {
@@ -808,7 +787,7 @@ impl Connection {
             }
         } else if ev.readiness().is_writable() {
             if token == self.get_token(LOCAL) {
-                let remote_buf = self.get_buf_mut(REMOTE);
+                let remote_buf = &mut self.remote_buf;
                 let total_payload_len = remote_buf.payload_len();
                 if total_payload_len == 0 {
                     return poll
@@ -826,8 +805,7 @@ impl Connection {
                         .map_err(CliError::from);
                 }
 
-                let local_stream = self.get_stream_mut(LOCAL);
-                match remote_buf.write_to(local_stream) {
+                match remote_buf.write_to(self.remote.as_mut().unwrap()) {
                     Ok(n) => {
                         if n == total_payload_len {
                             return poll
@@ -857,12 +835,21 @@ impl Connection {
                     }
                 }
             } else if token == self.get_token(REMOTE) {
-                let local_buf = self.get_buf_mut(LOCAL);
+                let local_buf = &mut self.local_buf;
                 let total_payload_len = local_buf.payload_len();
                 if total_payload_len == 0 {
-                    return self
-                        .srv
-                        .reregister_connection(self, Ready::readable(), REMOTE)
+                    return poll
+                        .reregister(
+                            self.get_stream(REMOTE),
+                            self.get_token(REMOTE),
+                            Ready::readable(),
+                            PollOpt::edge(),
+                        )
+                        .and_then(|_| {
+                            self.set_interest(Ready::readable(), REMOTE);
+
+                            Ok(())
+                        })
                         .map_err(CliError::from);
                 }
 
@@ -870,9 +857,18 @@ impl Connection {
                 match local_buf.write_to(self.remote.as_mut().unwrap()) {
                     Ok(n) => {
                         if n == total_payload_len {
-                            return self
-                                .srv
-                                .reregister_connection(self, Ready::readable(), REMOTE)
+                            return poll
+                                .reregister(
+                                    self.get_stream(REMOTE),
+                                    self.get_token(REMOTE),
+                                    Ready::readable(),
+                                    PollOpt::edge(),
+                                )
+                                .and_then(|_| {
+                                    self.set_interest(Ready::readable(), REMOTE);
+
+                                    Ok(())
+                                })
                                 .map_err(CliError::from);
                         }
 
@@ -895,17 +891,22 @@ impl Connection {
         Ok(())
     }
 
-    pub fn handle_events(&mut self, ev: &mio::Event) -> Result<(), CliError> {
+    pub fn handle_events(
+        &mut self,
+        poll: &Poll,
+        conns: &mut Slab<Connection>,
+        ev: &mio::Event,
+    ) -> Result<(), CliError> {
         let _result = match self.stage {
             LocalConnected => self.handle_local_auth_method(),
 
             SendMethodSelect => self.handle_local_snd_methodsel_reply(),
 
-            HandShake => self.handle_handshake(),
+            HandShake => self.handle_handshake(poll, conns),
 
-            RemoteConnecting => self.handle_remote_connected(ev),
+            RemoteConnecting => self.handle_remote_connected(poll, ev),
 
-            Streaming => self.handle_streaming(ev),
+            Streaming => self.handle_streaming(poll, ev),
         };
 
         Ok(())

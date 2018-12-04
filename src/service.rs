@@ -44,7 +44,7 @@ impl Service {
 
                     token @ _ => {
                         let c = self.conns.get_mut(token.0).unwrap();
-                        c.handle_events(&ev);
+                        c.handle_events(&self.poll, &mut self.conns, &ev);
                     }
                 }
             }
@@ -85,47 +85,7 @@ impl Service {
             })
     }
 
-    pub fn register_connection(
-        &self,
-        cnt: &mut Connection,
-        interest: Ready,
-        is_local_stream: bool,
-    ) -> Result<()> {
-        let stream = cnt.get_stream(is_local_stream);
-        let token = cnt.get_token(is_local_stream);
-
-        self.poll
-            .register(stream, token, interest, PollOpt::edge())
-            .and_then(|_| {
-                cnt.set_interest(interest, is_local_stream);
-
-                Ok(())
-            })
-    }
-
-    pub fn reregister_connection(
-        &self,
-        cnt: &mut Connection,
-        interest: Ready,
-        is_local_stream: bool,
-    ) -> Result<()> {
-        if cnt.get_interest(is_local_stream) != interest {
-            self.poll
-                .reregister(
-                    cnt.get_stream(is_local_stream),
-                    cnt.get_token(is_local_stream),
-                    interest,
-                    PollOpt::edge(),
-                ).and_then(|_| {
-                    cnt.set_interest(interest, is_local_stream);
-                    Ok(())
-                });
-        }
-
-        Ok(())
-    }
-
-    fn close_connection(&self, cnt: &mut Connection) -> Result<()> {
+    fn close_connection(&mut self, cnt: &mut Connection) -> Result<()> {
         cnt.shutdown(&self.poll);
 
         self.conns.remove(cnt.get_token(LOCAL).0);
