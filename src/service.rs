@@ -10,31 +10,31 @@ use log::*;
 
 const LISTENER: Token = Token(usize::max_value() - 1);
 
-pub struct Service<'s> {
-    conns: Slab<Connection<'s>>,
-    p: Poll,
+pub struct Service {
+    conns: Slab<Connection>,
+    poll: Poll,
 }
 
-impl<'s> Service<'s> {
+impl Service {
     pub fn new() -> Self {
         Service {
             conns: Slab::with_capacity(1024),
-            p: Poll::new().unwrap(),
+            poll: Poll::new().unwrap(),
         }
     }
 
-    pub fn serve(&'s mut self) -> Result<()> {
+    pub fn serve(&mut self) -> Result<()> {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 18109);
         let listener = TcpListener::bind(&addr).unwrap();
         println!("Listening on: {}", addr);
 
-        self.p
+        self.poll
             .register(&listener, LISTENER, Ready::readable(), PollOpt::edge())?;
 
         let timeout = time::Duration::from_millis(500);
         let mut evs = Events::with_capacity(1024);
         loop {
-            self.p.poll(&mut evs, Some(timeout))?;
+            self.poll.poll(&mut evs, Some(timeout))?;
 
             for ev in &evs {
                 match ev.token() {
@@ -51,7 +51,7 @@ impl<'s> Service<'s> {
         }
     }
 
-    fn accept(&'s mut self, lis: &TcpListener) -> Result<()> {
+    fn accept(&mut self, lis: &TcpListener) -> Result<()> {
         loop {
             match lis.accept() {
                 Ok((stream, addr)) => {
@@ -71,35 +71,15 @@ impl<'s> Service<'s> {
         }
     }
 
-    pub fn create_local_connection(&'s mut self, handle: TcpStream) -> Result<()> {
+    pub fn create_local_connection(&mut self, handle: TcpStream) -> Result<()> {
         let entry = self.conns.vacant_entry();
         let token = Token(entry.key());
 
-        self.p
+        self.poll
             .register(&handle, token, Ready::readable(), PollOpt::edge())
             .and_then(|_| {
-                let cnt = Connection::new(self, handle, token, Ready::readable());
+                let cnt = Connection::new(handle, token, Ready::readable());
                 entry.insert(cnt);
-
-                Ok(())
-            })
-    }
-
-    pub fn register_remote_connection(
-        &mut self,
-        handle: TcpStream,
-        cnt: &mut Connection<'s>,
-    ) -> Result<()> {
-        let entry = self.conns.vacant_entry();
-        let token = Token(entry.key());
-
-        self.p
-            .register(&handle, token, Ready::readable(), PollOpt::edge())
-            .and_then(|_| {
-                cnt.set_remote_stream(handle);
-                cnt.set_interest(Ready::readable(), LOCAL);
-                cnt.set_token(token, LOCAL);
-                entry.insert(*cnt);
 
                 Ok(())
             })
@@ -114,7 +94,7 @@ impl<'s> Service<'s> {
         let stream = cnt.get_stream(is_local_stream);
         let token = cnt.get_token(is_local_stream);
 
-        self.p
+        self.poll
             .register(stream, token, interest, PollOpt::edge())
             .and_then(|_| {
                 cnt.set_interest(interest, is_local_stream);
@@ -130,7 +110,7 @@ impl<'s> Service<'s> {
         is_local_stream: bool,
     ) -> Result<()> {
         if cnt.get_interest(is_local_stream) != interest {
-            self.p
+            self.poll
                 .reregister(
                     cnt.get_stream(is_local_stream),
                     cnt.get_token(is_local_stream),
@@ -145,12 +125,8 @@ impl<'s> Service<'s> {
         Ok(())
     }
 
-    pub fn deregister_connection(&self, stream: &TcpStream) -> Result<()> {
-        self.p.deregister(stream)
-    }
-
     fn close_connection(&self, cnt: &mut Connection) -> Result<()> {
-        cnt.shutdown();
+        cnt.shutdown(&self.poll);
 
         self.conns.remove(cnt.get_token(LOCAL).0);
         cnt.set_token(Token(std::usize::MAX), LOCAL);

@@ -1,7 +1,7 @@
 use super::err::{BufError::*, *};
-use super::service::Service;
 use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
-use mio::{self, net::TcpStream, Ready, Token};
+use mio::{self, net::TcpStream, Poll, PollOpt, Ready, Token};
+use slab::Slab;
 use std::io::{self, ErrorKind::*, Read, Write};
 use std::net::{self, IpAddr};
 use std::{cmp, mem, ptr, str};
@@ -259,15 +259,13 @@ impl Write for StreamBuf {
         }
 
         let (start, end) = (self.buf.len(), self.buf.capacity());
-        (&mut self.buf[start..end])
-            .write(buf)
-            .and_then(|n| {
-                unsafe {
-                    self.buf.set_len(self.buf.len() + n);
-                }
+        (&mut self.buf[start..end]).write(buf).and_then(|n| {
+            unsafe {
+                self.buf.set_len(self.buf.len() + n);
+            }
 
-                Ok(n)
-            })
+            Ok(n)
+        })
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -275,8 +273,7 @@ impl Write for StreamBuf {
     }
 }
 
-pub struct Connection<'c> {
-    srv: &'c mut Service<'c>,
+pub struct Connection {
     local: TcpStream,
     local_token: Token,
     local_buf: StreamBuf,
@@ -288,10 +285,9 @@ pub struct Connection<'c> {
     stage: Stage,
 }
 
-impl<'c> Connection<'c> {
-    pub fn new(srv: &'c mut Service<'c>, local: TcpStream, local_token: Token, interest: Ready) -> Self {
+impl Connection {
+    pub fn new(local: TcpStream, local_token: Token, interest: Ready) -> Self {
         Connection {
-            srv,
             local,
             local_token,
             local_buf: StreamBuf::new(),
@@ -382,17 +378,17 @@ impl<'c> Connection<'c> {
         }
     }
 
-    pub fn shutdown(&mut self) {
+    pub fn shutdown(&mut self, poll: &Poll) {
         self.set_interest(Ready::empty(), LOCAL);
         let local_stream = self.get_stream(LOCAL);
         local_stream.shutdown(net::Shutdown::Both);
-        self.srv.deregister_connection(local_stream);
-        
+        poll.deregister(local_stream);
+
         self.set_interest(Ready::empty(), REMOTE);
         if self.remote.is_some() {
             let remote_stream = self.get_stream(REMOTE);
             remote_stream.shutdown(net::Shutdown::Both);
-            self.srv.deregister_connection(remote_stream);
+            poll.deregister(remote_stream);
         }
     }
 
@@ -470,10 +466,15 @@ impl<'c> Connection<'c> {
             .and_then(|_| {
                 self.stage = HandShake;
                 Ok(())
-            }).map_err(CliError::from)
+            })
+            .map_err(CliError::from)
     }
 
-    fn handle_handshake(&mut self) -> Result<(), CliError> {
+    fn handle_handshake(
+        &mut self,
+        poll: &Poll,
+        cnts: &mut Slab<Connection>,
+    ) -> Result<(), CliError> {
         let local_buf = self.get_buf(LOCAL);
         let head = local_buf.peek(4)?;
         let (ver, cmd, _, atpy) = (head[0], head[1], head[2], head[3]);
@@ -495,7 +496,8 @@ impl<'c> Connection<'c> {
                     bs[CMD_HEAD_LEN + 1],
                     bs[CMD_HEAD_LEN + 2],
                     bs[CMD_HEAD_LEN + 3],
-                ).to_string();
+                )
+                .to_string();
                 port = unsafe { u16::from_be(mem::transmute::<[u8; 2], u16>([bs[8], bs[9]])) };
 
                 self.get_buf_mut(LOCAL).consume(CMD_IPV4_LEN);
@@ -523,7 +525,7 @@ impl<'c> Connection<'c> {
                     ]))
                 };
 
-              self.get_buf_mut(REMOTE).consume(total_len);
+                self.get_buf_mut(REMOTE).consume(total_len);
             }
 
             AddrType::V6 => {
@@ -565,13 +567,25 @@ impl<'c> Connection<'c> {
 
                 TcpStream::connect(&host.parse().unwrap())
                     .and_then(|sock| {
-                        if let Err(e) = self.srv.register_remote_connection(sock, self) {
-                            debug!("register remote connection failed: {}", e);
+                        let entry = cnts.vacant_entry();
+                        let token = Token(entry.key());
 
-                            return Err(e);
-                        }
+                        poll.register(&sock, token, Ready::readable(), PollOpt::edge())
+                            .and_then(|_| {
+                                self.set_remote_stream(sock);
+                                self.set_interest(Ready::readable(), REMOTE);
+                                self.set_token(token, REMOTE);
+                                entry.insert(*self);
 
-                        if let Err(e) = self.srv.deregister_connection(self.get_stream(LOCAL)) {
+                                Ok(())
+                            })
+                            .map_err(|e| {
+                                debug!("register remote connection failed: {}", e);
+
+                                CliError::from(e)
+                            });
+
+                        if let Err(e) = poll.deregister(self.get_stream(LOCAL)) {
                             debug!(
                                 "deregister LOCAL connection failed when connecte to remote: {}",
                                 e
@@ -585,7 +599,8 @@ impl<'c> Connection<'c> {
                         self.stage = RemoteConnecting;
 
                         Ok(())
-                    }).map_err(CliError::from)
+                    })
+                    .map_err(CliError::from)
             }
 
             _ => {
@@ -599,7 +614,7 @@ impl<'c> Connection<'c> {
         }
     }
 
-    fn handle_remote_connected(&mut self, ev: &mio::Event) -> Result<(), CliError> {
+    fn handle_remote_connected(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
         assert_eq!(self.get_token(REMOTE), ev.token());
 
         let remote_stream = self.get_stream(REMOTE);
@@ -640,7 +655,18 @@ impl<'c> Connection<'c> {
 
                     Err(CliError::from(GENERAL_FAILURE))
                 } else {
-                    self.srv.register_connection(self, Ready::readable(), LOCAL);
+                    poll.register(
+                        self.get_stream(LOCAL),
+                        self.get_token(LOCAL),
+                        Ready::readable(),
+                        PollOpt::edge(),
+                    )
+                    .and_then(|_| {
+                        self.set_interest(Ready::readable(), LOCAL);
+
+                        Ok(())
+                    });
+
                     self.stage = Streaming;
 
                     Ok(())
@@ -658,32 +684,50 @@ impl<'c> Connection<'c> {
         }
     }
 
-    fn handle_streaming(&mut self, ev: &mio::Event) -> Result<(), CliError> {
+    fn handle_streaming(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
         let token = ev.token();
         if ev.readiness().is_readable() {
             if token == self.get_token(LOCAL) {
-                let remote_buf = self.get_buf_mut(REMOTE);
-                match remote_buf.read_from(self.get_stream_mut(LOCAL)) {
+                let remote_buf = &mut self.remote_buf;
+                match remote_buf.read_from(&mut self.local) {
                     Ok(read_len) => {
                         if read_len == 0 {
                             return Err(CliError::from(UnexpectedEof));
                         }
 
-                        match remote_buf.write_to(self.get_stream_mut(REMOTE)) {
+                        match remote_buf.write_to(self.remote.as_mut().unwrap()) {
                             Ok(write_len) => {
                                 if write_len != read_len {
                                     if self.get_interest(REMOTE) != Ready::empty() {
-                                        return self
-                                            .srv
-                                            .reregister_connection(
-                                                self,
+                                        return poll
+                                            .reregister(
+                                                self.get_stream(REMOTE),
+                                                self.get_token(REMOTE),
                                                 self.get_interest(REMOTE) | Ready::writable(),
-                                                REMOTE,
-                                            ).map_err(CliError::from);
+                                                PollOpt::edge(),
+                                            )
+                                            .and_then(|_| {
+                                                self.set_interest(
+                                                    self.get_interest(REMOTE) | Ready::writable(),
+                                                    REMOTE,
+                                                );
+
+                                                Ok(())
+                                            })
+                                            .map_err(CliError::from);
                                     } else {
-                                        return self
-                                            .srv
-                                            .register_connection(self, Ready::writable(), REMOTE)
+                                        return poll
+                                            .register(
+                                                self.get_stream(REMOTE),
+                                                self.get_token(REMOTE),
+                                                Ready::writable(),
+                                                PollOpt::edge(),
+                                            )
+                                            .and_then(|_| {
+                                                self.set_interest(Ready::writable(), REMOTE);
+
+                                                Ok(())
+                                            })
                                             .map_err(CliError::from);
                                     }
                                 }
@@ -713,17 +757,35 @@ impl<'c> Connection<'c> {
                             Ok(write_len) => {
                                 if write_len != read_len {
                                     if self.get_interest(LOCAL) != Ready::empty() {
-                                        return self
-                                            .srv
-                                            .reregister_connection(
-                                                self,
+                                        return poll
+                                            .reregister(
+                                                self.get_stream(LOCAL),
+                                                self.get_token(LOCAL),
                                                 self.get_interest(LOCAL) | Ready::writable(),
-                                                LOCAL,
-                                            ).map_err(CliError::from);
+                                                PollOpt::edge(),
+                                            )
+                                            .and_then(|_| {
+                                                self.set_interest(
+                                                    self.get_interest(LOCAL) | Ready::writable(),
+                                                    LOCAL,
+                                                );
+
+                                                Ok(())
+                                            })
+                                            .map_err(CliError::from);
                                     } else {
-                                        return self
-                                            .srv
-                                            .register_connection(self, Ready::writable(), LOCAL)
+                                        return poll
+                                            .register(
+                                                self.get_stream(LOCAL),
+                                                self.get_token(LOCAL),
+                                                Ready::writable(),
+                                                PollOpt::edge(),
+                                            )
+                                            .and_then(|_| {
+                                                self.set_interest(Ready::writable(), LOCAL);
+
+                                                Ok(())
+                                            })
                                             .map_err(CliError::from);
                                     }
                                 }
@@ -749,9 +811,18 @@ impl<'c> Connection<'c> {
                 let remote_buf = self.get_buf_mut(REMOTE);
                 let total_payload_len = remote_buf.payload_len();
                 if total_payload_len == 0 {
-                    return self
-                        .srv
-                        .reregister_connection(self, Ready::readable(), LOCAL)
+                    return poll
+                        .reregister(
+                            self.get_stream(LOCAL),
+                            self.get_token(LOCAL),
+                            Ready::readable(),
+                            PollOpt::edge(),
+                        )
+                        .and_then(|_| {
+                            self.set_interest(Ready::readable(), LOCAL);
+
+                            Ok(())
+                        })
                         .map_err(CliError::from);
                 }
 
@@ -759,9 +830,18 @@ impl<'c> Connection<'c> {
                 match remote_buf.write_to(local_stream) {
                     Ok(n) => {
                         if n == total_payload_len {
-                            return self
-                                .srv
-                                .reregister_connection(self, Ready::readable(), LOCAL)
+                            return poll
+                                .reregister(
+                                    self.get_stream(LOCAL),
+                                    self.get_token(LOCAL),
+                                    Ready::readable(),
+                                    PollOpt::edge(),
+                                )
+                                .and_then(|_| {
+                                    self.set_interest(Ready::readable(), LOCAL);
+
+                                    Ok(())
+                                })
                                 .map_err(CliError::from);
                         }
 
