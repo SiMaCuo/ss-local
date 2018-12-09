@@ -1,12 +1,11 @@
 use super::err::{BufError::*, *};
 use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
+use log::{debug, error, info, warn};
 use mio::{self, net::TcpStream, Poll, PollOpt, Ready, Token};
-use slab::Slab;
+use slab::VacantEntry;
 use std::io::{self, ErrorKind::*, Read, Write};
 use std::net::{self, IpAddr};
 use std::{cmp, mem, ptr, str};
-#[macro_use]
-use log::*;
 
 const BUF_ALLOC_SIZE: usize = 4096;
 const MIN_VACANT_SIZE: usize = 512;
@@ -272,7 +271,7 @@ impl Write for StreamBuf {
         Ok(())
     }
 }
-
+#[derive(Clone)]
 pub struct Connection {
     local: TcpStream,
     local_token: Token,
@@ -372,7 +371,7 @@ impl Connection {
         }
     }
 
-    fn handle_local_auth_method(&mut self) -> Result<(), CliError> {
+    pub fn handle_local_auth_method(&mut self) -> Result<(), CliError> {
         let buf = self.get_buf(LOCAL);
         if buf.payload_len() < METHOD_SELECT_HEAD_LEN {
             warn!(
@@ -453,7 +452,7 @@ impl Connection {
     fn handle_handshake(
         &mut self,
         poll: &Poll,
-        conns: &mut Slab<Connection>,
+        entry: &VacantEntry<Connection>,
     ) -> Result<(), CliError> {
         let head = self.local_buf.peek(4)?;
         let (ver, cmd, _, atpy) = (head[0], head[1], head[2], head[3]);
@@ -546,7 +545,6 @@ impl Connection {
 
                 TcpStream::connect(&host.parse().unwrap())
                     .and_then(|sock| {
-                        let entry = conns.vacant_entry();
                         let token = Token(entry.key());
 
                         poll.register(&sock, token, Ready::readable(), PollOpt::edge())
@@ -894,7 +892,7 @@ impl Connection {
     pub fn handle_events(
         &mut self,
         poll: &Poll,
-        conns: &mut Slab<Connection>,
+        entry: &VacantEntry<Connection>,
         ev: &mio::Event,
     ) -> Result<(), CliError> {
         let _result = match self.stage {
@@ -902,7 +900,7 @@ impl Connection {
 
             SendMethodSelect => self.handle_local_snd_methodsel_reply(),
 
-            HandShake => self.handle_handshake(poll, conns),
+            HandShake => self.handle_handshake(poll, entry),
 
             RemoteConnecting => self.handle_remote_connected(poll, ev),
 

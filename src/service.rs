@@ -1,12 +1,11 @@
 use super::conn::*;
+use log::info;
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Poll, PollOpt, Ready, Token};
 use slab::*;
 use std::io::{ErrorKind::*, Result};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time;
-#[macro_use]
-use log::*;
 
 const LISTENER: Token = Token(usize::max_value() - 1);
 
@@ -43,8 +42,9 @@ impl Service {
                     }
 
                     token @ _ => {
+                        let entry = self.conns.vacant_entry();
                         let c = self.conns.get_mut(token.0).unwrap();
-                        c.handle_events(&self.poll, &mut self.conns, &ev);
+                        c.handle_events(&self.poll, &entry, &ev);
                     }
                 }
             }
@@ -72,14 +72,17 @@ impl Service {
     }
 
     pub fn create_local_connection(&mut self, handle: TcpStream) -> Result<()> {
-        let entry = self.conns.vacant_entry();
-        let token = Token(entry.key());
+        let entry_local = self.conns.vacant_entry();
+        let entry_remote = self.conns.vacant_entry();
+        let token_local = Token(entry_local.key());
+        let token_remote = Token(entry_remote.key());
 
         self.poll
-            .register(&handle, token, Ready::readable(), PollOpt::edge())
+            .register(&handle, token_local, Ready::readable(), PollOpt::edge())
             .and_then(|_| {
-                let cnt = Connection::new(handle, token, Ready::readable());
-                entry.insert(cnt);
+                let cnt = Connection::new(handle, token_local, Ready::readable());
+                entry_local.insert(cnt.clone());
+                entry_remote.insert(cnt.clone());
 
                 Ok(())
             })
