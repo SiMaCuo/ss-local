@@ -5,6 +5,7 @@
 
 pub mod conn;
 pub mod err;
+pub mod rccell;
 pub mod service;
 pub mod socks5;
 

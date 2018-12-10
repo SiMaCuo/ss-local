@@ -1,4 +1,5 @@
 use super::conn::*;
+use super::rccell::*;
 use log::info;
 use mio::net::{TcpListener, TcpStream};
 use mio::{Events, Poll, PollOpt, Ready, Token};
@@ -10,7 +11,7 @@ use std::time;
 const LISTENER: Token = Token(usize::max_value() - 1);
 
 pub struct Service {
-    conns: Slab<Connection>,
+    conns: Slab<RcCell<Connection>>,
     poll: Poll,
 }
 
@@ -35,18 +36,26 @@ impl Service {
         loop {
             self.poll.poll(&mut evs, Some(timeout))?;
 
+            let mut v: Vec<RcCell<Connection>> = Vec::with_capacity(128);
             for ev in &evs {
                 match ev.token() {
                     LISTENER => {
-                        self.accept(&listener);
+                        self.accept(&listener)?;
                     }
 
                     token @ _ => {
-                        let entry = self.conns.vacant_entry();
-                        let c = self.conns.get_mut(token.0).unwrap();
-                        c.handle_events(&self.poll, &entry, &ev);
+                        let c = self.conns.get(token.0).unwrap();
+                        if let Err(e) = c.borrow_mut().handle_events(&self.poll, &ev) {
+                            info!("connection closed by {}", e);
+
+                            v.push(c.clone());
+                        }
                     }
                 }
+            }
+
+            for c in v {
+                self.close_connection(&c);
             }
         }
     }
@@ -57,7 +66,7 @@ impl Service {
                 Ok((stream, addr)) => {
                     info!("{:?} connected.", addr);
 
-                    self.create_local_connection(stream);
+                    self.create_local_connection(stream)?;
                 }
 
                 Err(e) => {
@@ -72,30 +81,28 @@ impl Service {
     }
 
     pub fn create_local_connection(&mut self, handle: TcpStream) -> Result<()> {
-        let entry_local = self.conns.vacant_entry();
-        let entry_remote = self.conns.vacant_entry();
-        let token_local = Token(entry_local.key());
-        let token_remote = Token(entry_remote.key());
-
+        let cnt = new_rc_cell(Connection::new());
+        let mut token = Token(self.conns.insert(cnt.clone()));
         self.poll
-            .register(&handle, token_local, Ready::readable(), PollOpt::edge())
+            .register(&handle, token, Ready::readable(), PollOpt::edge())
             .and_then(|_| {
-                let cnt = Connection::new(handle, token_local, Ready::readable());
-                entry_local.insert(cnt.clone());
-                entry_remote.insert(cnt.clone());
+                cnt.borrow_mut().set_stream(handle, LOCAL);
+                cnt.borrow_mut().set_token(token, LOCAL);
+                cnt.borrow_mut().set_interest(Ready::readable(), LOCAL);
+
+                token = Token(self.conns.insert(cnt.clone()));
+                cnt.borrow_mut().set_token(token, REMOTE);
 
                 Ok(())
             })
     }
 
-    fn close_connection(&mut self, cnt: &mut Connection) -> Result<()> {
-        cnt.shutdown(&self.poll);
+    fn close_connection(&mut self, cnt: &RcCell<Connection>) {
+        cnt.borrow_mut().shutdown(&self.poll);
 
-        self.conns.remove(cnt.get_token(LOCAL).0);
-        cnt.set_token(Token(std::usize::MAX), LOCAL);
-        self.conns.remove(cnt.get_token(REMOTE).0);
-        cnt.set_token(Token(std::usize::MAX), REMOTE);
-
-        Ok(())
+        self.conns.remove(cnt.borrow().get_token(LOCAL).0);
+        cnt.borrow_mut().set_token(Token(std::usize::MAX), LOCAL);
+        self.conns.remove(cnt.borrow().get_token(REMOTE).0);
+        cnt.borrow_mut().set_token(Token(std::usize::MAX), REMOTE);
     }
 }

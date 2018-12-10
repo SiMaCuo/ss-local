@@ -12,7 +12,7 @@ pub enum Stage {
     Streaming,
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, non_snake_case)]
 pub mod Method {
     pub const NO_AUTH: u8 = 0x0;
     pub const GSSAPI: u8 = 0x1;
@@ -21,14 +21,14 @@ pub mod Method {
 }
 use self::Method::*;
 
-#[allow(dead_code)]
+#[allow(dead_code, non_snake_case)]
 pub mod Cmd {
     pub const CONNECT: u8 = 0x1;
     pub const BIND: u8 = 0x2;
     pub const UDP_ASSOCIATE: u8 = 0x3;
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, non_snake_case)]
 pub mod AddrType {
     pub const V4: u8 = 0x1;
     pub const DOMAIN: u8 = 0x2;
@@ -36,7 +36,7 @@ pub mod AddrType {
 }
 use self::AddrType::*;
 
-#[allow(dead_code)]
+#[allow(dead_code, non_snake_case)]
 pub mod Rep {
     pub const SUCCEEDED: u8 = 0x00;
     pub const GENERAL_FAILURE: u8 = 0x01;
