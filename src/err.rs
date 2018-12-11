@@ -12,6 +12,7 @@ pub enum CliError {
 use self::CliError::*;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum BufError {
     Empty,
     InsufficientData,

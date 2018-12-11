@@ -10,8 +10,6 @@ const BUF_ALLOC_SIZE: usize = 4096;
 const MIN_VACANT_SIZE: usize = 512;
 pub const LOCAL: bool = true;
 pub const REMOTE: bool = false;
-pub const REREGISTER: bool = true;
-pub const REGISTER: bool = false;
 
 fn is_wouldblock(e: &io::Error) -> bool {
     if e.kind() == WouldBlock || e.kind() == Interrupted {
@@ -509,11 +507,11 @@ impl Connection {
             _ => {
                 let response = [SOCKS5_VERSION, ADDRTYPE_NOT_SUPPORTED, 0, V4];
                 error!("notsupported addrtype {}", atpy);
-                self.local_buf.write(&response).map_err(|e| {
+                if let Err(e) = self.local_buf.write(&response) {
                     warn!("write ADDRTYPE_NOT_SUPPORTED failed: {}", e);
 
-                    CliError::from(GENERAL_FAILURE)
-                });
+                    return Err(CliError::from(GENERAL_FAILURE));
+                }
             }
         }
 
@@ -524,23 +522,19 @@ impl Connection {
 
                 TcpStream::connect(&host.parse().unwrap())
                     .and_then(|sock| {
-                        poll.register(
+                        if let Err(e) = poll.register(
                             &sock,
                             self.get_token(REMOTE),
                             Ready::readable(),
                             PollOpt::edge(),
-                        )
-                        .and_then(|_| {
-                            self.set_stream(sock, REMOTE);
-                            self.set_interest(Ready::readable(), REMOTE);
-
-                            Ok(())
-                        })
-                        .map_err(|e| {
+                        ) {
                             debug!("register remote connection failed: {}", e);
 
-                            CliError::from(e)
-                        });
+                            return Err(e);
+                        } else {
+                            self.set_stream(sock, REMOTE);
+                            self.set_interest(Ready::readable(), REMOTE);
+                        }
 
                         if let Err(e) = poll.deregister(self.get_stream(LOCAL)) {
                             debug!(
@@ -622,7 +616,8 @@ impl Connection {
                         self.set_interest(Ready::readable(), LOCAL);
 
                         Ok(())
-                    });
+                    })
+                    .map_err(CliError::from)?;
 
                     self.stage = Streaming;
 
