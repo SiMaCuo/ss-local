@@ -1,6 +1,6 @@
+use super::conn;
 use super::socks5::*;
-use std::io::{self, ErrorKind::*};
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, io};
 
 #[derive(Debug)]
 pub enum CliError {
@@ -24,7 +24,7 @@ use self::BufError::*;
 impl CliError {
     pub fn is_wouldblock(&self) -> bool {
         match *self {
-            StdIo(ref e) if e.kind() == WouldBlock || e.kind() == Interrupted => true,
+            StdIo(ref e) => conn::is_wouldblock(e),
             _ => false,
         }
     }

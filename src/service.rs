@@ -1,10 +1,9 @@
-use super::conn::*;
+use super::conn::{self, *};
 use super::rccell::*;
-use log::info;
-use mio::net::{TcpListener, TcpStream};
-use mio::{Events, Poll, PollOpt, Ready, Token};
+use log::{debug, info};
+use mio::{net::TcpListener, net::TcpStream, Events, Poll, PollOpt, Ready, Token};
 use slab::*;
-use std::io::{ErrorKind::*, Result};
+use std::io::Result;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time;
 
@@ -49,7 +48,7 @@ impl Service {
                     token @ _ => {
                         let c = self.conns.get(token.0).unwrap();
                         if let Err(e) = c.borrow_mut().handle_events(&self.poll, &ev) {
-                            info!("connection closed by {}", e);
+                            info!("{} closed by {}", c.borrow(), e);
 
                             v.push(c.clone());
                         }
@@ -67,13 +66,13 @@ impl Service {
         loop {
             match lis.accept() {
                 Ok((stream, addr)) => {
-                    info!("{:?} connected.", addr);
+                    debug!("accpet connection {}.", addr);
 
                     self.create_local_connection(stream)?;
                 }
 
                 Err(e) => {
-                    if e.kind() == WouldBlock || e.kind() == Interrupted {
+                    if conn::is_wouldblock(&e) {
                         return Ok(());
                     } else {
                         return Err(e);

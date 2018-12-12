@@ -4,14 +4,14 @@ use log::{debug, error, info, warn};
 use mio::{self, net::TcpStream, Poll, PollOpt, Ready, Token};
 use std::io::{self, ErrorKind::*, Read, Write};
 use std::net::{self, IpAddr};
-use std::{cmp, mem, ptr, str};
+use std::{cmp, fmt, mem, ptr, str};
 
 const BUF_ALLOC_SIZE: usize = 4096;
 const MIN_VACANT_SIZE: usize = 512;
 pub const LOCAL: bool = true;
 pub const REMOTE: bool = false;
 
-fn is_wouldblock(e: &io::Error) -> bool {
+pub fn is_wouldblock(e: &io::Error) -> bool {
     if e.kind() == WouldBlock || e.kind() == Interrupted {
         return true;
     }
@@ -354,12 +354,13 @@ impl Connection {
     }
 
     pub fn handle_local_auth_method(&mut self) -> Result<(), CliError> {
+        debug!("handle_local_auth_method @{}", *self);
+
         let buf = self.get_buf(LOCAL);
         if buf.payload_len() < METHOD_SELECT_HEAD_LEN {
             warn!(
-                "auth {}, recive data less than  {} bytes.",
-                self.get_stream(LOCAL).peer_addr()?,
-                METHOD_SELECT_HEAD_LEN
+                "auth, recive data less than  {} bytes @{}",
+                METHOD_SELECT_HEAD_LEN, *self
             );
 
             return Ok(());
@@ -374,10 +375,10 @@ impl Connection {
         let method_sel_len = usize::from(nmethods) + METHOD_SELECT_HEAD_LEN;
         if method_sel_len > buf.payload_len() {
             warn!(
-                "auth {}, recive data size {} less than need {}.",
-                self.get_stream(LOCAL).peer_addr()?,
+                "auth, recive data size {} less than need {} @{}",
                 buf.payload_len(),
-                method_sel_len
+                method_sel_len,
+                *self
             );
 
             return Ok(());
@@ -419,6 +420,8 @@ impl Connection {
     }
 
     fn handle_local_snd_methodsel_reply(&mut self) -> Result<(), CliError> {
+        debug!("handle_local_snd_methodsel_reply @{}", *self);
+
         let no_auth = [SOCKS5_VERSION, Method::NO_AUTH];
 
         self.get_stream_mut(LOCAL)
@@ -431,6 +434,8 @@ impl Connection {
     }
 
     fn handle_handshake(&mut self, poll: &Poll) -> Result<(), CliError> {
+        debug!("handle_handshake @{}", *self);
+
         let head = self.local_buf.peek(4)?;
         let (ver, cmd, _, atpy) = (head[0], head[1], head[2], head[3]);
         if ver != SOCKS5_VERSION {
@@ -506,9 +511,9 @@ impl Connection {
 
             _ => {
                 let response = [SOCKS5_VERSION, ADDRTYPE_NOT_SUPPORTED, 0, V4];
-                error!("notsupported addrtype {}", atpy);
+                error!("notsupported addrtype {} @{}", atpy, *self);
                 if let Err(e) = self.local_buf.write(&response) {
-                    warn!("write ADDRTYPE_NOT_SUPPORTED failed: {}", e);
+                    warn!("write ADDRTYPE_NOT_SUPPORTED failed: {} @{}", e, *self);
 
                     return Err(CliError::from(GENERAL_FAILURE));
                 }
@@ -528,7 +533,7 @@ impl Connection {
                             Ready::readable(),
                             PollOpt::edge(),
                         ) {
-                            debug!("register remote connection failed: {}", e);
+                            debug!("register remote connection failed: {} @{}", e, *self);
 
                             return Err(e);
                         } else {
@@ -538,8 +543,8 @@ impl Connection {
 
                         if let Err(e) = poll.deregister(self.get_stream(LOCAL)) {
                             debug!(
-                                "deregister LOCAL connection failed when connecte to remote: {}",
-                                e
+                                "deregister LOCAL connection failed when connecte to remote: {} @{}",
+                                e, *self
                             );
 
                             return Err(e);
@@ -558,7 +563,7 @@ impl Connection {
                 let response = [SOCKS5_VERSION, CMD_NOT_SUPPORTED, 0, V4];
                 self.local_buf.write(&response).unwrap();
 
-                error!("notsupported command {}", cmd);
+                error!("notsupported command {} @{}", cmd, *self);
 
                 return Err(CliError::from(CMD_NOT_SUPPORTED));
             }
@@ -566,6 +571,8 @@ impl Connection {
     }
 
     fn handle_remote_connected(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
+        debug!("handle_remote_connected @{}", *self);
+
         assert_eq!(self.get_token(REMOTE), ev.token());
 
         let remote_stream = self.get_stream(REMOTE);
@@ -602,7 +609,10 @@ impl Connection {
         match write_result {
             Ok(n) => {
                 if n != need_write_len {
-                    warn!("write {} bytes response to remote connect, need {} bytes, close connection.", n, need_write_len);
+                    warn!(
+                        "write {} bytes response to remote connect, need {} bytes @{}",
+                        n, need_write_len, *self
+                    );
 
                     Err(CliError::from(GENERAL_FAILURE))
                 } else {
@@ -627,8 +637,8 @@ impl Connection {
 
             Err(e) => {
                 warn!(
-                    "write response when remote connected failed with error: {}",
-                    e
+                    "write response when remote connected failed with error: {} @{}",
+                    e, *self
                 );
 
                 Err(CliError::from(e))
@@ -637,6 +647,8 @@ impl Connection {
     }
 
     fn handle_streaming(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
+        debug!("handle_streaming @{}", *self);
+
         let token = ev.token();
         if ev.readiness().is_readable() {
             if token == self.get_token(LOCAL) {
@@ -877,5 +889,32 @@ impl Connection {
         };
 
         Ok(())
+    }
+}
+
+impl fmt::Display for Connection {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s0 = match self.local {
+            Some(ref l) => format!(
+                "[{:?}]  local {}-{} <-> ",
+                self.stage,
+                l.peer_addr().unwrap(),
+                l.local_addr().unwrap()
+            ),
+
+            None => "local * <-> ".to_string(),
+        };
+
+        let s1 = match self.remote {
+            Some(ref r) => format!(
+                "remote {}-{}",
+                r.local_addr().unwrap(),
+                r.peer_addr().unwrap()
+            ),
+
+            None => "remote *".to_string(),
+        };
+
+        write!(f, "{}", [s0, s1].concat())
     }
 }
