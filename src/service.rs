@@ -8,7 +8,7 @@ use std::io::{ErrorKind::*, Result};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time;
 
-const LISTENER: Token = Token(usize::max_value() - 1);
+const LISTENER: Token = Token(0);
 
 pub struct Service {
     conns: Slab<RcCell<Connection>>,
@@ -26,7 +26,10 @@ impl Service {
     pub fn serve(&mut self) -> Result<()> {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 18109);
         let listener = TcpListener::bind(&addr).unwrap();
-        println!("Listening on: {}", addr);
+        info!("Listening on: {}", addr);
+
+        let listener_token = Token(self.conns.insert(new_rc_cell(Connection::new()).clone()));
+        assert_eq!(listener_token, LISTENER);
 
         self.poll
             .register(&listener, LISTENER, Ready::readable(), PollOpt::edge())?;
