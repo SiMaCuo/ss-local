@@ -2,7 +2,7 @@ use super::err::{BufError::*, *};
 use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
 use log::{debug, error, info, warn};
 use mio::{self, net::TcpStream, Poll, PollOpt, Ready, Token};
-use std::io::{self, ErrorKind::*, Read, Write};
+use std::io::{self, Error, ErrorKind::*, Read, Write};
 use std::net::{self, IpAddr};
 use std::{cmp, fmt, mem, ptr, str};
 
@@ -30,6 +30,42 @@ pub fn is_wouldblock(e: &io::Error) -> bool {
     }
 
     return false;
+}
+
+fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> io::Result<usize> {
+    let start_len = v.len();
+    let capacity = v.capacity();
+    if start_len == capacity {
+        return Err(Error::from(InvalidInput));
+    }
+
+    let mut g = Guard {
+        len: v.len(),
+        buf: v,
+    };
+
+    unsafe {
+        g.buf.set_len(capacity);
+    }
+    loop {
+        match r.read(&mut g.buf[g.len..]) {
+            Ok(n) => {
+                g.len += n;
+
+                if n == 0 || g.len == capacity {
+                    return Ok(g.len - start_len);
+                }
+            }
+
+            Err(e) => {
+                if g.len - start_len > 0 {
+                    return Ok(g.len - start_len);
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+    }
 }
 
 struct StreamBuf {
@@ -173,41 +209,15 @@ impl StreamBuf {
     }
 
     pub fn read_from<R: Read>(&mut self, r: &mut R) -> io::Result<usize> {
-        let mut total_read_len: usize = 0;
-        let mut g = Guard {
-            len: self.buf.len(),
-            buf: &mut self.buf,
-        };
-        loop {
-            let vacant_len = self.vacant_len();
-            if vacant_len < MIN_VACANT_SIZE {
-                if self.vacant_len() > 0 {
-                    self.move_payload_to_head();
-                }
-
-                self.buf.reserve(BUF_ALLOC_SIZE);
+        if self.vacant_len() < MIN_VACANT_SIZE {
+            if self.vacant_len() > 0 {
+                self.move_payload_to_head();
             }
 
-            let capacity = g.buf.capacity();
-            let result = r.read(&mut self.buf[start..end]);
-            match result {
-                Ok(n) => {
-                    total_read_len += n;
-
-                    if n == 0 {
-                        return Ok(total_read_len);
-                    }
-                }
-
-                Err(e) => {
-                    if total_read_len > 0 {
-                        return Ok(total_read_len);
-                    } else {
-                        return Err(e);
-                    }
-                }
-            }
+            self.buf.reserve(BUF_ALLOC_SIZE);
         }
+
+        do_read_from(r, &mut self.buf)
     }
 }
 
@@ -467,9 +477,28 @@ impl Connection {
     fn handle_handshake(&mut self, poll: &Poll) -> Result<(), CliError> {
         debug!("handle_handshake @{}", *self);
 
+        match (&mut self.local_buf).read_from(self.local.as_mut().unwrap()) {
+            Ok(n) => {
+                if n == 0 {
+                    return Err(CliError::from(UnexpectedEof));
+                }
+            }
+
+            Err(e) => {
+                if is_wouldblock(&e) == false {
+                    return Err(CliError::from(e));
+                }
+            }
+        }
+
         let head = self.local_buf.peek(4)?;
         let (ver, cmd, _, atpy) = (head[0], head[1], head[2], head[3]);
         if ver != SOCKS5_VERSION {
+            warn!(
+                "handshake, need socks version 5, recive version {} @{}",
+                ver, *self
+            );
+
             return Err(CliError::from(Rep::GENERAL_FAILURE));
         }
 
@@ -478,6 +507,8 @@ impl Connection {
         match atpy {
             AddrType::V4 => {
                 if self.local_buf.payload_len() < CMD_IPV4_LEN {
+                    debug!("handshake, ipv4, need {} bytes at least, but only {} bytes recived, need more data @{}", CMD_IPV4_LEN, self.local.buf.payload_len(), *self);
+
                     return Err(CliError::from(WouldBlock));
                 }
 
@@ -491,17 +522,33 @@ impl Connection {
                 .to_string();
                 port = unsafe { u16::from_be(mem::transmute::<[u8; 2], u16>([bs[8], bs[9]])) };
 
+                debug!("handshake, ipv4 {}:{} @{}", addr, port, *self);
+
                 (&mut self.local_buf).consume(CMD_IPV4_LEN)?;
             }
 
             AddrType::DOMAIN => {
                 if self.local_buf.payload_len() < CMD_HEAD_LEN + 1 {
+                    debug!(
+                        "handshake, domain head len {}, but payload len {}, need more data @{}",
+                        CMD_HEAD_LEN,
+                        self.local_buf.payload_len(),
+                        *self
+                    );
+
                     return Err(CliError::from(WouldBlock));
                 }
 
                 let domain_len = usize::from(self.local_buf.get_u8_unchecked(CMD_HEAD_LEN));
                 let total_len = CMD_HEAD_LEN + 1 + domain_len + 2;
                 if self.local_buf.payload_len() < total_len {
+                    debug!(
+                        "handshake, domain total len {}, but payload len {}, need more data @{}",
+                        total_len,
+                        self.local_buf.payload_len(),
+                        *self
+                    );
+
                     return Err(CliError::from(WouldBlock));
                 }
 
@@ -516,11 +563,15 @@ impl Connection {
                     ]))
                 };
 
+                debug!("handshake domain {}:{}, @{}", addr, port, *self);
+
                 (&mut self.remote_buf).consume(total_len)?;
             }
 
             AddrType::V6 => {
                 if self.local_buf.payload_len() < CMD_IPV6_LEN {
+                    debug!("handshake, ipv6, head need {} bytes at least, but only {} bytes recived, need more data @{}", CMD_IPV6_LEN, self.local.buf.payload_len(), *self);
+
                     return Err(CliError::from(WouldBlock));
                 }
 
@@ -536,6 +587,8 @@ impl Connection {
                         bs[CMD_IPV6_LEN],
                     ]))
                 };
+
+                debug!("handshake, ipv6 {}:{}, @{}", addr, port, *self);
 
                 self.local_buf.consume(CMD_IPV6_LEN)?;
             }
@@ -622,6 +675,8 @@ impl Connection {
                 let bs: [u8; 2] = unsafe { mem::transmute::<u16, [u8; 2]>(port.to_be()) };
                 &mut response[8..].copy_from_slice(&bs);
                 write_result = (&mut self.local_buf).write(&response);
+
+                debug!("remote connected, ipv4 {}", sock_addr, *self);
             }
 
             IpAddr::V6(addr) => {
@@ -634,6 +689,8 @@ impl Connection {
                 response[20] = (port.to_be() >> 1) as u8;
                 response[21] = (port.to_be() & 0xff) as u8;
                 write_result = (&mut self.local_buf).write(&response);
+
+                debug!("remote connected, ipv6 {}", sock_addr, *self);
             }
         }
 
@@ -916,7 +973,11 @@ impl Connection {
 
             SendMethodSelect => self.handle_local_snd_methodsel_reply(),
 
-            HandShake => self.handle_handshake(poll),
+            HandShake => {
+                assert!(ev.readiness().is_readable());
+
+                self.handle_handshake(poll)
+            }
 
             RemoteConnecting => self.handle_remote_connected(poll, ev),
 
