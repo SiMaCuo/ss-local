@@ -8,5 +8,8 @@ edition = "2018"
 mio = "0.6"
 slab = "0.4"
 log = "0.4"
+chrono = "0.4"
+log4rs = "0.8"
+
 
 

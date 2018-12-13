@@ -1,0 +1,6 @@
+listen-address 127.0.0.1:42646
+show-on-task-bar 1
+#activity-animation 0
+forward-socks5 / 127.0.0.1:18109 .
+
+

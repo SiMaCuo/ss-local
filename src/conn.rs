@@ -11,6 +11,19 @@ const MIN_VACANT_SIZE: usize = 512;
 pub const LOCAL: bool = true;
 pub const REMOTE: bool = false;
 
+struct Guard<'a> {
+    buf: &'a mut Vec<u8>,
+    len: usize,
+}
+
+impl<'a> Drop for Guard<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            self.buf.set_len(self.len);
+        }
+    }
+}
+
 pub fn is_wouldblock(e: &io::Error) -> bool {
     if e.kind() == WouldBlock || e.kind() == Interrupted {
         return true;
@@ -161,6 +174,10 @@ impl StreamBuf {
 
     pub fn read_from<R: Read>(&mut self, r: &mut R) -> io::Result<usize> {
         let mut total_read_len: usize = 0;
+        let mut g = Guard {
+            len: self.buf.len(),
+            buf: &mut self.buf,
+        };
         loop {
             let vacant_len = self.vacant_len();
             if vacant_len < MIN_VACANT_SIZE {
@@ -171,7 +188,7 @@ impl StreamBuf {
                 self.buf.reserve(BUF_ALLOC_SIZE);
             }
 
-            let (start, end) = (self.buf.len(), self.buf.capacity());
+            let capacity = g.buf.capacity();
             let result = r.read(&mut self.buf[start..end]);
             match result {
                 Ok(n) => {
@@ -355,6 +372,20 @@ impl Connection {
 
     pub fn handle_local_auth_method(&mut self) -> Result<(), CliError> {
         debug!("handle_local_auth_method @{}", *self);
+
+        match (&mut self.local_buf).read_from(self.local.as_mut().unwrap()) {
+            Ok(n) => {
+                if n == 0 {
+                    return Err(CliError::from(UnexpectedEof));
+                }
+            }
+
+            Err(e) => {
+                if is_wouldblock(&e) == false {
+                    return Err(CliError::from(e));
+                }
+            }
+        }
 
         let buf = self.get_buf(LOCAL);
         if buf.payload_len() < METHOD_SELECT_HEAD_LEN {
@@ -877,7 +908,11 @@ impl Connection {
 
     pub fn handle_events(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
         let _result = match self.stage {
-            LocalConnected => self.handle_local_auth_method(),
+            LocalConnected => {
+                assert!(ev.readiness().is_readable());
+
+                self.handle_local_auth_method()
+            }
 
             SendMethodSelect => self.handle_local_snd_methodsel_reply(),
 
