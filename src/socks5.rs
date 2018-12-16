@@ -31,8 +31,8 @@ pub mod Cmd {
 #[allow(dead_code, non_snake_case)]
 pub mod AddrType {
     pub const V4: u8 = 0x1;
-    pub const DOMAIN: u8 = 0x2;
-    pub const V6: u8 = 0x3;
+    pub const DOMAIN: u8 = 0x3;
+    pub const V6: u8 = 0x4;
 }
 
 #[allow(dead_code, non_snake_case)]

@@ -34,11 +34,11 @@ impl Service {
             .register(&listener, LISTENER, Ready::readable(), PollOpt::edge())?;
 
         let timeout = time::Duration::from_millis(500);
-        let mut evs = Events::with_capacity(1024);
+        let mut evs = Events::with_capacity(64);
+        let mut v: Vec<RcCell<Connection>> = Vec::with_capacity(128);
         loop {
             self.poll.poll(&mut evs, Some(timeout))?;
 
-            let mut v: Vec<RcCell<Connection>> = Vec::with_capacity(128);
             for ev in &evs {
                 match ev.token() {
                     LISTENER => {
@@ -46,19 +46,22 @@ impl Service {
                     }
 
                     token @ _ => {
-                        let c = self.conns.get(token.0).unwrap();
-                        if let Err(e) = c.borrow_mut().handle_events(&self.poll, &ev) {
-                            info!("{} closed by {}", c.borrow(), e);
+                        let cnt = self.conns.get(token.0).unwrap();
+                        let rlt = cnt.borrow_mut().handle_events(&self.poll, &ev);
+                        if let Err(e) = rlt {
+                            debug!("close connection, error {}  @{}", e, cnt.borrow());
 
-                            v.push(c.clone());
+                            v.push(cnt.clone());
                         }
                     }
                 }
             }
 
-            for c in v {
-                self.close_connection(&c);
+            for c in &v {
+                self.close_connection(c);
             }
+
+            v.clear();
         }
     }
 
@@ -84,19 +87,30 @@ impl Service {
 
     pub fn create_local_connection(&mut self, handle: TcpStream) -> Result<()> {
         let cnt = new_rc_cell(Connection::new());
-        let mut token = Token(self.conns.insert(cnt.clone()));
-        self.poll
-            .register(&handle, token, Ready::readable(), PollOpt::edge())
-            .and_then(|_| {
-                cnt.borrow_mut().set_stream(handle, LOCAL);
-                cnt.borrow_mut().set_token(token, LOCAL);
-                cnt.borrow_mut().set_interest(Ready::readable(), LOCAL);
+        let local_token = Token(self.conns.insert(cnt.clone()));
+        let rls = cnt.borrow_mut().register(
+            &mut self.poll,
+            handle,
+            local_token,
+            Ready::readable(),
+            PollOpt::edge(),
+            LOCAL,
+        );
 
-                token = Token(self.conns.insert(cnt.clone()));
-                cnt.borrow_mut().set_token(token, REMOTE);
+        match rls {
+            Err(e) => {
+                self.conns.remove(local_token.0);
+
+                Err(e)
+            }
+
+            Ok(_) => {
+                let remote_token = Token(self.conns.insert(cnt.clone()));
+                cnt.borrow_mut().set_token(remote_token, REMOTE);
 
                 Ok(())
-            })
+            }
+        }
     }
 
     fn close_connection(&mut self, cnt: &RcCell<Connection>) {
