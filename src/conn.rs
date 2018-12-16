@@ -920,6 +920,13 @@ impl Connection {
             if token == self.get_token(LOCAL) {
                 let total_payload_len = self.get_buf(LOCAL).payload_len();
                 if total_payload_len == 0 {
+                    debug!(
+                        "streaming, {}:{} local write event, but zero payload, @{}",
+                        THIS_FILE,
+                        line!(),
+                        *self
+                    );
+
                     if let Err(e) = self.reregister(
                         poll,
                         self.get_token(LOCAL),
@@ -936,26 +943,6 @@ impl Connection {
                         );
 
                         return Err(CliError::from(e));
-                    }
-
-                    if self.get_readiness(REMOTE).is_readable() == false {
-                        if let Err(e) = self.reregister(
-                            poll,
-                            self.get_token(REMOTE),
-                            self.get_readiness(REMOTE) | Ready::readable(),
-                            PollOpt::edge(),
-                            REMOTE,
-                        ) {
-                            debug!(
-                                "stream, {}:{}, re-register remote stream failed: {}, @{}",
-                                THIS_FILE,
-                                line!(),
-                                e,
-                                *self
-                            );
-
-                            return Err(CliError::from(e));
-                        }
                     }
                 }
 
@@ -979,26 +966,6 @@ impl Connection {
 
                                 return Err(CliError::from(e));
                             }
-
-                            if self.get_readiness(REMOTE).is_readable() == false {
-                                if let Err(e) = self.reregister(
-                                    poll,
-                                    self.get_token(REMOTE),
-                                    self.get_readiness(REMOTE) | Ready::readable(),
-                                    PollOpt::edge(),
-                                    LOCAL,
-                                ) {
-                                    debug!(
-                                        "stream, {}:{}, re-register remote stream failed: {}, @{}",
-                                        THIS_FILE,
-                                        line!(),
-                                        e,
-                                        *self
-                                    );
-
-                                    return Err(CliError::from(e));
-                                }
-                            }
                         }
 
                         return Ok(());
@@ -1015,6 +982,13 @@ impl Connection {
             } else if token == self.get_token(REMOTE) {
                 let total_payload_len = self.get_buf(REMOTE).payload_len();
                 if total_payload_len == 0 {
+                    debug!(
+                        "streaming, {}:{} remote write event, but zero payload, @{}",
+                        THIS_FILE,
+                        line!(),
+                        *self
+                    );
+
                     if let Err(e) = self.reregister(
                         poll,
                         self.get_token(REMOTE),
@@ -1031,26 +1005,6 @@ impl Connection {
                         );
 
                         return Err(CliError::from(e));
-                    }
-
-                    if self.get_readiness(LOCAL).is_readable() == false {
-                        if let Err(e) = self.reregister(
-                            poll,
-                            self.get_token(LOCAL),
-                            self.get_readiness(LOCAL) | Ready::readable(),
-                            PollOpt::edge(),
-                            LOCAL,
-                        ) {
-                            debug!(
-                                "stream, {}:{}, re-register local stream failed: {}, @{}",
-                                THIS_FILE,
-                                line!(),
-                                e,
-                                *self
-                            );
-
-                            return Err(CliError::from(e));
-                        }
                     }
 
                     return Ok(());
@@ -1075,26 +1029,6 @@ impl Connection {
                                 );
 
                                 return Err(CliError::from(e));
-                            }
-
-                            if self.get_readiness(LOCAL).is_readable() == false {
-                                if let Err(e) = self.reregister(
-                                    poll,
-                                    self.get_token(LOCAL),
-                                    self.get_readiness(LOCAL) | Ready::readable(),
-                                    PollOpt::edge(),
-                                    LOCAL,
-                                ) {
-                                    debug!(
-                                        "stream, {}:{}, re-register local stream failed: {}, @{}",
-                                        THIS_FILE,
-                                        line!(),
-                                        e,
-                                        *self
-                                    );
-
-                                    return Err(CliError::from(e));
-                                }
                             }
                         }
 
