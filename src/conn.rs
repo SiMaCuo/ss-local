@@ -807,7 +807,7 @@ impl Connection {
     }
 
     fn handle_streaming(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
-        debug!("handle_streaming @{}", *self);
+        debug!("streaming, {}", *self);
 
         let token = ev.token();
         if ev.readiness().is_readable() {
@@ -815,17 +815,17 @@ impl Connection {
                 let remote_buf = &mut self.remote_buf;
                 match remote_buf.read_from(self.local.as_mut().unwrap()) {
                     Ok(read_len) => {
+                        debug!("\t remote buf read from local sock {} bytes", read_len);
                         if read_len == 0 {
-                            debug!(
-                                "streaming, remote buf read from local zero bytes @{}",
-                                *self
-                            );
+                            debug!("\t remote buf read from local zero bytes @{}", *self);
 
                             return Err(CliError::from(UnexpectedEof));
                         }
 
                         match remote_buf.write_to(self.remote.as_mut().unwrap()) {
                             Ok(write_len) => {
+                                debug!("\t remote buf write to remote sock {} bytes", write_len);
+
                                 let mut readiness = self.get_readiness(REMOTE);
                                 if write_len != read_len {
                                     if readiness.is_writable() == false {
@@ -838,6 +838,8 @@ impl Connection {
                                 }
 
                                 if readiness != self.get_readiness(REMOTE) {
+                                    debug!("\t change remote sock readiness {:?}", readiness);
+
                                     return self
                                         .reregister(
                                             poll,
@@ -866,17 +868,17 @@ impl Connection {
                 let local_buf = &mut self.local_buf;
                 match local_buf.read_from(self.remote.as_mut().unwrap()) {
                     Ok(read_len) => {
+                        debug!("\t local buf read from remote sock {} bytes", read_len);
                         if read_len == 0 {
-                            debug!(
-                                "streaming, local buf read from remote zero bytes @{}",
-                                *self
-                            );
+                            debug!("\t local buf read from remote zero bytes @{}", *self);
 
                             return Err(CliError::from(UnexpectedEof));
                         }
 
                         match local_buf.write_to(self.local.as_mut().unwrap()) {
                             Ok(write_len) => {
+                                debug!("\t local buf write to local sock {} bytes", write_len);
+
                                 let mut readiness = self.get_readiness(LOCAL);
                                 if write_len != read_len {
                                     if readiness.is_writable() == false {
@@ -889,6 +891,8 @@ impl Connection {
                                 }
 
                                 if readiness != self.get_readiness(LOCAL) {
+                                    debug!("\t change local sock readiness {:?}", readiness);
+
                                     return self
                                         .reregister(
                                             poll,
@@ -919,14 +923,15 @@ impl Connection {
         } else if ev.readiness().is_writable() {
             if token == self.get_token(LOCAL) {
                 let total_payload_len = self.get_buf(LOCAL).payload_len();
-                if total_payload_len == 0 {
-                    debug!(
-                        "streaming, {}:{} local write event, but zero payload, @{}",
-                        THIS_FILE,
-                        line!(),
-                        *self
-                    );
+                debug!(
+                    "\t {}:{} local write event, total payload len {}, @{}",
+                    THIS_FILE,
+                    line!(),
+                    total_payload_len,
+                    *self
+                );
 
+                if total_payload_len == 0 {
                     if let Err(e) = self.reregister(
                         poll,
                         self.get_token(LOCAL),
@@ -935,7 +940,7 @@ impl Connection {
                         LOCAL,
                     ) {
                         debug!(
-                            "stream, {}:{}, re-register local stream failed: {}, @{}",
+                            "\t {}:{}, re-register local stream failed: {}, @{}",
                             THIS_FILE,
                             line!(),
                             e,
@@ -948,6 +953,8 @@ impl Connection {
 
                 match (&mut self.local_buf).write_to(self.local.as_mut().unwrap()) {
                     Ok(n) => {
+                        debug!("\t local buf write to local sock {} bytes", n);
+
                         if n == total_payload_len {
                             if let Err(e) = self.reregister(
                                 poll,
@@ -957,7 +964,7 @@ impl Connection {
                                 LOCAL,
                             ) {
                                 debug!(
-                                    "stream, {}:{}, re-register local stream failed: {}, @{}",
+                                    "\t {}:{}, re-register local stream failed: {}, @{}",
                                     THIS_FILE,
                                     line!(),
                                     e,
@@ -981,9 +988,17 @@ impl Connection {
                 }
             } else if token == self.get_token(REMOTE) {
                 let total_payload_len = self.get_buf(REMOTE).payload_len();
+                debug!(
+                    "\t {}:{} remote write event, total payload len {}, @{}",
+                    THIS_FILE,
+                    line!(),
+                    total_payload_len,
+                    *self
+                );
+
                 if total_payload_len == 0 {
                     debug!(
-                        "streaming, {}:{} remote write event, but zero payload, @{}",
+                        "\t {}:{} remote write event, but zero payload, @{}",
                         THIS_FILE,
                         line!(),
                         *self
@@ -997,7 +1012,7 @@ impl Connection {
                         REMOTE,
                     ) {
                         debug!(
-                            "stream, {}:{}, re-register remote stream failed: {}, @{}",
+                            "\t {}:{}, re-register remote stream failed: {}, @{}",
                             THIS_FILE,
                             line!(),
                             e,
@@ -1012,6 +1027,8 @@ impl Connection {
 
                 match (&mut self.remote_buf).write_to(self.remote.as_mut().unwrap()) {
                     Ok(n) => {
+                        debug!("\t remote buf write to remote sock {} bytes", n);
+
                         if n == total_payload_len {
                             if let Err(e) = self.reregister(
                                 poll,
