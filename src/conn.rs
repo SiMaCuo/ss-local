@@ -282,6 +282,7 @@ pub struct Connection {
     remote_buf: StreamBuf,
     remote_readiness: Ready,
     stage: Stage,
+    shutdown: bool,
 }
 
 impl Connection {
@@ -297,6 +298,7 @@ impl Connection {
             remote_buf: StreamBuf::new(),
             remote_readiness: Ready::empty(),
             stage: LocalConnected,
+            shutdown: false,
         }
     }
 
@@ -378,6 +380,14 @@ impl Connection {
         }
     }
 
+    fn get_buf_mut(&mut self, is_local_stream: bool) -> &mut StreamBuf {
+        if is_local_stream {
+            &mut self.local_buf
+        } else {
+            &mut self.remote_buf
+        }
+    }
+
     pub fn get_token(&self, is_local_stream: bool) -> Token {
         if is_local_stream {
             self.local_token
@@ -411,6 +421,12 @@ impl Connection {
     }
 
     pub fn shutdown(&mut self, poll: &Poll) {
+        if self.shutdown == true {
+            return;
+        }
+
+        self.shutdown = true;
+
         self.set_readiness(Ready::empty(), LOCAL);
         let local_stream = self.get_stream(LOCAL);
         let _ = local_stream.shutdown(net::Shutdown::Both);
@@ -801,12 +817,25 @@ impl Connection {
         }
     }
 
+    fn copy(&mut self, src: bool, dst: bool) {
+        let buf = self.get_buf_mut(dst);
+        let dst_stm = self.get_stream_mut(dst);
+        let src_stm = self.get_stream_mut(src);
+
+        loop {
+            buf.read_from(src).and_then(|read_len| {
+                buf.write_to(dst_stm)
+
+    }
+
     fn handle_streaming(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
         debug!("streaming, {}", *self);
 
         let token = ev.token();
         if ev.readiness().is_readable() {
             if token == self.get_token(LOCAL) {
+                self.copy(true, false);
+
                 let remote_buf = &mut self.remote_buf;
                 match remote_buf.read_from(self.local.as_mut().unwrap()) {
                     Ok(read_len) => {
