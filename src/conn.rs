@@ -37,7 +37,10 @@ pub fn is_wouldblock(e: &io::Error) -> bool {
 fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> io::Result<usize> {
     let start_len = v.len();
     let capacity = v.capacity();
+    debug!("\t\t do_read_from len {}, capacity {}", start_len, capacity);
+
     if start_len == capacity {
+        debug!("\t\t start_len == capacity");
         return Err(Error::from(InvalidInput));
     }
 
@@ -52,15 +55,26 @@ fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> io::Result<usize> {
     loop {
         match r.read(&mut g.buf[g.len..]) {
             Ok(n) => {
-                g.len += n;
+                debug!("\t\t\t loop, g.len {}, n {}", g.len, n);
 
-                if n == 0 || g.len == capacity {
+                if n == 0 {
                     return Ok(g.len - start_len);
+                }
+
+                g.len += n;
+                if g.len == g.buf.capacity() {
+                    g.buf.reserve(BUF_ALLOC_SIZE);
+                    debug!("\t\t\t new buf capacity {}", g.buf.capacity());
+                    unsafe {
+                        g.buf.set_len(g.buf.capacity());
+                    }
                 }
             }
 
             Err(e) => {
                 if g.len - start_len > 0 {
+                    debug!("\t\t\t with error {}, length {}", e, g.len - start_len);
+
                     return Ok(g.len - start_len);
                 } else {
                     return Err(e);
@@ -102,7 +116,7 @@ impl StreamBuf {
     pub fn consume(&mut self, size: usize) -> Result<usize, CliError> {
         let n = cmp::min(self.payload_len(), size);
         self.pos += n;
-        if self.pos == self.buf.len() {
+        if self.payload_len() == 0 {
             self.pos = 0;
             unsafe {
                 self.buf.set_len(0);
@@ -154,25 +168,6 @@ impl StreamBuf {
         self.pos = 0;
     }
 
-    #[allow(dead_code)]
-    pub fn write_buf_to<W: Write>(&mut self, buf: &[u8], w: &mut W) -> io::Result<usize> {
-        let buf_len = buf.len();
-        if self.payload_len() > 0 {
-            let _ = self.write(buf).unwrap();
-            let _ = self.write_to(w);
-
-            Ok(buf_len)
-        } else {
-            w.write(buf).and_then(|n| {
-                if n < buf.len() {
-                    self.write(&buf[n..])?;
-                }
-
-                Ok(buf_len)
-            })
-        }
-    }
-
     pub fn write_to<W: Write>(&mut self, w: &mut W) -> io::Result<usize> {
         if self.payload_len() == 0 {
             return Ok(0);
@@ -180,7 +175,7 @@ impl StreamBuf {
 
         let mut total_write_len: usize = 0;
         loop {
-            let result = w.write(&self.buf[self.pos..self.buf.len()]);
+            let result = w.write(&self.buf[self.pos..]);
             match result {
                 Ok(n) => {
                     total_write_len += n;
@@ -644,7 +639,7 @@ impl Connection {
 
                 debug!("handshake domain {}:{}, @{}", addr, port, *self);
 
-                (&mut self.remote_buf).consume(total_len)?;
+                (&mut self.local_buf).consume(total_len)?;
             }
 
             AddrType::V6 => {
@@ -675,7 +670,7 @@ impl Connection {
             _ => {
                 let response = [SOCKS5_VERSION, ADDRTYPE_NOT_SUPPORTED, 0, V4];
                 error!("notsupported addrtype {} @{}", atpy, *self);
-                if let Err(e) = self.local_buf.write(&response) {
+                if let Err(e) = self.get_stream_mut(LOCAL).write(&response) {
                     warn!("write ADDRTYPE_NOT_SUPPORTED failed: {} @{}", e, *self);
 
                     return Err(CliError::from(GENERAL_FAILURE));
@@ -720,7 +715,7 @@ impl Connection {
 
             _ => {
                 let response = [SOCKS5_VERSION, CMD_NOT_SUPPORTED, 0, V4];
-                self.local_buf.write(&response).unwrap();
+                self.get_stream_mut(LOCAL).write(&response).unwrap();
 
                 error!("notsupported command {} @{}", cmd, *self);
 
@@ -837,6 +832,10 @@ impl Connection {
                                     }
                                 }
 
+                                if readiness.is_readable() == false {
+                                    readiness = Ready::readable();
+                                }
+
                                 if readiness != self.get_readiness(REMOTE) {
                                     debug!("\t change remote sock readiness {:?}", readiness);
 
@@ -866,6 +865,11 @@ impl Connection {
                 }
             } else if token == self.get_token(REMOTE) {
                 let local_buf = &mut self.local_buf;
+                debug!(
+                    "local read from remote, current payload {}",
+                    local_buf.payload_len()
+                );
+
                 match local_buf.read_from(self.remote.as_mut().unwrap()) {
                     Ok(read_len) => {
                         debug!("\t local buf read from remote sock {} bytes", read_len);
@@ -888,6 +892,10 @@ impl Connection {
                                     if readiness.is_writable() {
                                         readiness = readiness & !Ready::writable();
                                     }
+                                }
+
+                                if readiness.is_readable() == false {
+                                    readiness = Ready::readable();
                                 }
 
                                 if readiness != self.get_readiness(LOCAL) {

@@ -116,9 +116,16 @@ impl Service {
     fn close_connection(&mut self, cnt: &RcCell<Connection>) {
         cnt.borrow_mut().shutdown(&self.poll);
 
-        self.conns.remove(cnt.borrow().get_token(LOCAL).0);
-        cnt.borrow_mut().set_token(Token(std::usize::MAX), LOCAL);
-        self.conns.remove(cnt.borrow().get_token(REMOTE).0);
-        cnt.borrow_mut().set_token(Token(std::usize::MAX), REMOTE);
+        let mut index = cnt.borrow().get_token(LOCAL).0;
+        if self.conns.contains(index) {
+            self.conns.remove(index);
+            cnt.borrow_mut().set_token(Token(std::usize::MAX), LOCAL);
+        }
+
+        index = cnt.borrow().get_token(REMOTE).0;
+        if self.conns.contains(index) {
+            self.conns.remove(index);
+            cnt.borrow_mut().set_token(Token(std::usize::MAX), REMOTE);
+        }
     }
 }
