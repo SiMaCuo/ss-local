@@ -9,7 +9,6 @@ use std::{cmp, fmt, mem, ptr, str};
 const BUF_ALLOC_SIZE: usize = 4096;
 const MIN_VACANT_SIZE: usize = 128;
 const BUF_RESERVE_SIZE: usize = 512;
-const _THIS_FILE: &str = file!();
 
 pub const LOCAL: bool = true;
 pub const REMOTE: bool = false;
@@ -41,6 +40,7 @@ fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> io::Result<usize> {
 
     if start_len == capacity {
         debug!("\t\t start_len == capacity");
+
         return Err(Error::from(InvalidInput));
     }
 
@@ -59,41 +59,12 @@ fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> io::Result<usize> {
                 if n == 0 || g.len == g.buf.capacity() {
                     return Ok(g.len - start_len);
                 }
-                // debug!("\t\t\t loop, g.len {}, n {}", g.len, n);
-                //
-                // if n == 0 {
-                //     return Ok(g.len - start_len);
-                // }
-                //
-                // g.len += n;
-                // if g.len == g.buf.capacity() {
-                //     g.buf.reserve(BUF_ALLOC_SIZE);
-                //     debug!("\t\t\t new buf capacity {}", g.buf.capacity());
-                //     unsafe {
-                //         g.buf.set_len(g.buf.capacity());
-                //     }
-                // }
             }
 
             Err(e) => return Err(e),
         }
     }
 }
-
-// fn copy(src: &mut TcpStream, dst: &mut TcpStream, data: &mut StreamBuf) {
-//     if data.payload_len() > 0 {
-//         debug!("\t\t copy, write the remaining data to the network first.");
-//
-//         data.write_to(dst);
-//     }
-//
-//     loop {
-//         let rlt = data.read_from(src);
-//         match rlt {
-//             ok(read_len) => {
-//
-//
-// }
 
 struct StreamBuf {
     buf: Vec<u8>,
@@ -217,14 +188,6 @@ impl StreamBuf {
     }
 
     pub fn read_from<R: Read>(&mut self, r: &mut R) -> io::Result<usize> {
-        // if self.vacant_len() < MIN_VACANT_SIZE {
-        //     if self.vacant_len() > 0 {
-        //         self.move_payload_to_head();
-        //     }
-        //
-        //     self.buf.reserve(BUF_ALLOC_SIZE);
-        // }
-
         do_read_from(r, &mut self.buf)
     }
 
@@ -270,7 +233,6 @@ impl StreamBuf {
 
                     if self.vacant_len() < MIN_VACANT_SIZE {
                         if self.head_vacant_len() > 0 {
-                            debug!("\t\t copy, move payload to head");
                             self.move_payload_to_head();
                         }
 
@@ -296,18 +258,8 @@ impl StreamBuf {
 
         if self.buf.capacity() > BUF_ALLOC_SIZE {
             let payload_len = self.payload_len();
-            let cap_len = self.buf.capacity();
             if payload_len + MIN_VACANT_SIZE < BUF_ALLOC_SIZE {
-                debug!(
-                    "\t\t copy, reserve buf capacity, cap len {}, payload len {}",
-                    cap_len, payload_len
-                );
-
-                if self.head_vacant_len() > 0 {
-                    self.move_payload_to_head();
-                }
-
-                self.buf.reserve(BUF_ALLOC_SIZE - self.payload_len());
+                self.buf.reserve(BUF_ALLOC_SIZE - payload_len);
             }
         }
 
@@ -935,61 +887,6 @@ impl Connection {
                 }
 
                 return Ok(());
-            // match remote_buf.read_from(self.local.as_mut().unwrap()) {
-            //     Ok(read_len) => {
-            //         debug!("\t remote buf read from local sock {} bytes", read_len);
-            //         if read_len == 0 {
-            //             debug!("\t remote buf read from local zero bytes @{}", *self);
-            //
-            //             return Err(CliError::from(UnexpectedEof));
-            //         }
-            //
-            //         match remote_buf.write_to(self.remote.as_mut().unwrap()) {
-            //             Ok(write_len) => {
-            //                 debug!("\t remote buf write to remote sock {} bytes", write_len);
-            //
-            //                 let mut readiness = self.get_readiness(REMOTE);
-            //                 if write_len != read_len {
-            //                     if readiness.is_writable() == false {
-            //                         readiness = readiness | Ready::writable();
-            //                     }
-            //                 } else {
-            //                     if readiness.is_writable() {
-            //                         readiness = readiness & !Ready::writable();
-            //                     }
-            //                 }
-            //
-            //                 if readiness.is_readable() == false {
-            //                     readiness = Ready::readable();
-            //                 }
-            //
-            //                 if readiness != self.get_readiness(REMOTE) {
-            //                     debug!("\t change remote sock readiness {:?}", readiness);
-            //
-            //                     return self
-            //                         .reregister(
-            //                             poll,
-            //                             self.get_token(REMOTE),
-            //                             readiness,
-            //                             PollOpt::edge(),
-            //                             REMOTE,
-            //                         )
-            //                         .map_err(CliError::from);
-            //                 }
-            //
-            //                 return Ok(());
-            //             }
-            //
-            //             Err(e) => {
-            //                 return Err(CliError::from(e));
-            //             }
-            //         }
-            //     }
-            //
-            //     Err(e) => {
-            //         return Err(CliError::from(e));
-            //     }
-            // }
             } else if token == self.get_token(REMOTE) {
                 debug!("\tremote readable.");
 
@@ -1021,66 +918,6 @@ impl Connection {
                         .reregister(poll, readiness, PollOpt::edge(), LOCAL)
                         .map_err(CliError::from);
                 }
-            // let local_buf = &mut self.local_buf;
-            // debug!(
-            //     "local read from remote, current payload {}",
-            //     local_buf.payload_len()
-            // );
-            //
-            // match local_buf.read_from(self.remote.as_mut().unwrap()) {
-            //     Ok(read_len) => {
-            //         debug!("\t local buf read from remote sock {} bytes", read_len);
-            //         if read_len == 0 {
-            //             debug!("\t local buf read from remote zero bytes @{}", *self);
-            //
-            //             return Err(CliError::from(UnexpectedEof));
-            //         }
-            //
-            //         match local_buf.write_to(self.local.as_mut().unwrap()) {
-            //             Ok(write_len) => {
-            //                 debug!("\t local buf write to local sock {} bytes", write_len);
-            //
-            //                 let mut readiness = self.get_readiness(LOCAL);
-            //                 if write_len != read_len {
-            //                     if readiness.is_writable() == false {
-            //                         readiness = readiness | Ready::writable();
-            //                     }
-            //                 } else {
-            //                     if readiness.is_writable() {
-            //                         readiness = readiness & !Ready::writable();
-            //                     }
-            //                 }
-            //
-            //                 if readiness.is_readable() == false {
-            //                     readiness = Ready::readable();
-            //                 }
-            //
-            //                 if readiness != self.get_readiness(LOCAL) {
-            //                     debug!("\t change local sock readiness {:?}", readiness);
-            //
-            //                     return self
-            //                         .reregister(
-            //                             poll,
-            //                             readiness,
-            //                             PollOpt::edge(),
-            //                             LOCAL,
-            //                         )
-            //                         .map_err(CliError::from);
-            //                 }
-            //
-            //                 return Ok(());
-            //             }
-            //
-            //             Err(e) => {
-            //                 return Err(CliError::from(e));
-            //             }
-            //         }
-            //     }
-            //
-            //     Err(e) => {
-            //         return Err(CliError::from(e));
-            //     }
-            // }
             } else {
                 unreachable!();
             }
@@ -1119,38 +956,6 @@ impl Connection {
                         }
                     }
                 }
-
-            // match (&mut self.local_buf).write_to(self.local.as_mut().unwrap()) {
-            //     Ok(n) => {
-            //         debug!("\t local buf write to local sock {} bytes", n);
-            //
-            //         if n == payload_len {
-            //             if let Err(e) =
-            //                 self.reregister(poll, Ready::readable(), PollOpt::edge(), LOCAL)
-            //             {
-            //                 debug!(
-            //                     "\t {}:{}, re-register local stream failed: {}, @{}",
-            //                     THIS_FILE,
-            //                     line!(),
-            //                     e,
-            //                     *self
-            //                 );
-            //
-            //                 return Err(CliError::from(e));
-            //             }
-            //         }
-            //
-            //         return Ok(());
-            //     }
-            //
-            //     Err(e) => {
-            //         if is_wouldblock(&e) {
-            //             return Ok(());
-            //         }
-            //
-            //         return Err(CliError::from(e));
-            //     }
-            // }
             } else if token == self.get_token(REMOTE) {
                 let payload_len = self.get_buf(REMOTE).payload_len();
                 debug!("\tremote writable, payload length {}", payload_len);
@@ -1185,37 +990,6 @@ impl Connection {
                         }
                     }
                 }
-            // match (&mut self.remote_buf).write_to(self.remote.as_mut().unwrap()) {
-            //     Ok(n) => {
-            //         debug!("\t remote buf write to remote sock {} bytes", n);
-            //
-            //         if n == total_payload_len {
-            //             if let Err(e) =
-            //                 self.reregister(poll, Ready::readable(), PollOpt::edge(), REMOTE)
-            //             {
-            //                 debug!(
-            //                     "stream, {}:{}, re-register remote stream failed: {}, @{}",
-            //                     THIS_FILE,
-            //                     line!(),
-            //                     e,
-            //                     *self
-            //                 );
-            //
-            //                 return Err(CliError::from(e));
-            //             }
-            //         }
-            //
-            //         return Ok(());
-            //     }
-            //
-            //     Err(e) => {
-            //         if is_wouldblock(&e) {
-            //             return Ok(());
-            //         }
-            //
-            //         return Err(CliError::from(e));
-            //     }
-            // }
             } else {
                 unreachable!();
             }
