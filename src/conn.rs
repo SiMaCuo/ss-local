@@ -8,7 +8,6 @@ use std::{cmp, fmt, mem, ptr, str};
 
 const BUF_ALLOC_SIZE: usize = 4096;
 const MIN_VACANT_SIZE: usize = 128;
-const BUF_RESERVE_SIZE: usize = 512;
 
 pub const LOCAL: bool = true;
 pub const REMOTE: bool = false;
@@ -202,6 +201,7 @@ impl StreamBuf {
 
         let mut total_rd_len: usize = 0;
         let mut loop_payload_len: usize = 0;
+        let mut write_wouldblock: bool = false;
         let rls = loop {
             let rd_rls = self.read_from(r);
             match rd_rls {
@@ -211,32 +211,35 @@ impl StreamBuf {
                     }
 
                     total_rd_len += rd_len;
-                    let _ = self
-                        .write_to(w)
-                        .and_then(|wd_len| {
-                            debug!(
-                                "\t\t\t read {}, write {}, payload {}",
-                                rd_len,
-                                wd_len,
-                                self.payload_len()
-                            );
+                    if write_wouldblock == false {
+                        let _ = self
+                            .write_to(w)
+                            .and_then(|wd_len| {
+                                debug!(
+                                    "\t read {}, write {}, payload {}",
+                                    rd_len,
+                                    wd_len,
+                                    self.payload_len()
+                                );
 
-                            loop_payload_len = self.payload_len();
+                                loop_payload_len = self.payload_len();
 
-                            Ok(wd_len)
-                        })
-                        .map_err(|e| {
-                            debug!("\t\t\t write to targe failed {}", e);
+                                Ok(wd_len)
+                            })
+                            .map_err(|e| {
+                                debug!("\t write to targe failed {}", e);
+                                write_wouldblock = true;
 
-                            e
-                        });
+                                e
+                            });
+                    }
 
                     if self.vacant_len() < MIN_VACANT_SIZE {
                         if self.head_vacant_len() > 0 {
                             self.move_payload_to_head();
                         }
 
-                        self.buf.reserve(BUF_RESERVE_SIZE);
+                        self.buf.reserve(BUF_ALLOC_SIZE);
                     }
                 }
 
