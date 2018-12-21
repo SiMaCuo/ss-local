@@ -1,4 +1,4 @@
-use super::err::{BufError::*, *};
+use super::err::*;
 use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
 use log::{debug, error, info, warn};
 use mio::{self, net::TcpStream, Poll, PollOpt, Ready, Token};
@@ -89,7 +89,7 @@ impl StreamBuf {
 
     pub fn peek(&self, size: usize) -> Result<&[u8], CliError> {
         if size > self.payload_len() {
-            return Err(CliError::from(InsufficientData));
+            return Err(CliError::from(InvalidInput));
         }
 
         Ok(&self.buf[self.pos..self.pos + size])
@@ -264,59 +264,6 @@ impl StreamBuf {
         }
 
         rls
-    }
-}
-
-impl Read for StreamBuf {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (&self.buf[self.head_vacant_len()..self.tail_vacant_len()])
-            .read(buf)
-            .and_then(|len| {
-                self.pos += len;
-                if self.pos == self.buf.len() {
-                    self.pos = 0;
-                    unsafe {
-                        self.buf.set_len(0);
-                    }
-                }
-
-                Ok(len)
-            })
-    }
-}
-
-impl Write for StreamBuf {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if buf.len() > self.vacant_len() {
-            if self.vacant_len() > 0 {
-                self.move_payload_to_head();
-            }
-
-            let mul = buf.len() % BUF_ALLOC_SIZE + 1;
-            self.buf.reserve(mul * BUF_ALLOC_SIZE);
-        } else if buf.len() > self.tail_vacant_len() {
-            self.move_payload_to_head();
-        }
-
-        let mut g = Guard {
-            len: self.buf.len(),
-            buf: &mut self.buf,
-        };
-
-        unsafe {
-            let capacity = g.buf.capacity();
-            g.buf.set_len(capacity);
-        }
-
-        (&mut g.buf[g.len..]).write(buf).and_then(|n| {
-            g.len += n;
-
-            Ok(n)
-        })
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }
 
