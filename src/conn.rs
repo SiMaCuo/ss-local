@@ -151,39 +151,62 @@ impl StreamBuf {
 
     pub fn write_to<W: Write>(&mut self, w: &mut W) -> io::Result<usize> {
         if self.payload_len() == 0 {
+            debug!("\t\t write_to, buffer is empty.");
+
             return Ok(0);
         }
 
         let mut total_write_len: usize = 0;
-        loop {
-            let result = w.write(&self.buf[self.pos..]);
+        let rls = loop {
+            let result = if self.payload_len() > BUF_ALLOC_SIZE {
+                w.write(&self.buf[self.pos..self.pos + BUF_ALLOC_SIZE])
+            } else {
+                w.write(&self.buf[self.pos..])
+            };
+
             match result {
                 Ok(n) => {
                     total_write_len += n;
                     self.pos += n;
                     if self.payload_len() == 0 {
-                        self.pos = 0;
-                        unsafe {
-                            self.buf.set_len(0);
-                        }
-
-                        return Ok(total_write_len);
+                        break Ok(total_write_len);
                     }
 
                     if n == 0 {
-                        return Ok(total_write_len);
+                        debug!("\t\t total write length {}", total_write_len);
+
+                        break Ok(total_write_len);
                     }
                 }
 
                 Err(e) => {
                     if total_write_len > 0 {
-                        return Ok(total_write_len);
+                        debug!("\t\t write some bytes, but some error happed {}", e);
+
+                        break Ok(total_write_len);
                     } else {
-                        return Err(e);
+                        debug!("\t\t write to return with error {}", e);
+
+                        break Err(e);
                     }
                 }
             }
+        };
+
+        if self.payload_len() == 0 {
+            if self.buf.capacity() > 2 * BUF_ALLOC_SIZE {
+                debug!("\t\t cap len {}, resize data buf", self.buf.capacity());
+
+                self.buf.resize(BUF_ALLOC_SIZE, 0u8);
+            }
+
+            self.pos = 0;
+            unsafe {
+                self.buf.set_len(0);
+            }
         }
+
+        rls
     }
 
     pub fn read_from<R: Read>(&mut self, r: &mut R) -> io::Result<usize> {
@@ -215,14 +238,16 @@ impl StreamBuf {
                         let _ = self
                             .write_to(w)
                             .and_then(|wd_len| {
-                                debug!(
-                                    "\t read {}, write {}, payload {}",
-                                    rd_len,
-                                    wd_len,
-                                    self.payload_len()
-                                );
+                                if self.payload_len() > 0 {
+                                    debug!(
+                                        "\t read {}, write {}, payload {}",
+                                        rd_len,
+                                        wd_len,
+                                        self.payload_len()
+                                    );
 
-                                loop_payload_len = self.payload_len();
+                                    loop_payload_len += self.payload_len();
+                                }
 
                                 Ok(wd_len)
                             })
@@ -240,6 +265,7 @@ impl StreamBuf {
                         }
 
                         self.buf.reserve(BUF_ALLOC_SIZE);
+                        debug!("\t cap len 01 {}", self.buf.capacity());
                     }
                 }
 
@@ -263,6 +289,7 @@ impl StreamBuf {
             let payload_len = self.payload_len();
             if payload_len + MIN_VACANT_SIZE < BUF_ALLOC_SIZE {
                 self.buf.reserve(BUF_ALLOC_SIZE - payload_len);
+                debug!("\t cap len 02 {}", self.buf.capacity());
             }
         }
 
@@ -874,11 +901,17 @@ impl Connection {
         } else if ev.readiness().is_writable() {
             if token == self.get_token(LOCAL) {
                 let payload_len = self.get_buf(LOCAL).payload_len();
-                debug!("\tlocal writable, payload lengh {}", payload_len);
+                debug!(
+                    "\tlocal writable, payload length {} {}, @{}",
+                    payload_len,
+                    &self.local_buf.payload_len(),
+                    *self
+                );
 
                 if payload_len == 0 {
-                    self.reregister(poll, Ready::readable(), PollOpt::edge(), LOCAL)
-                        .map_err(CliError::from)?;
+                    let _ = self.reregister(poll, Ready::readable(), PollOpt::edge(), LOCAL);
+
+                    return Ok(());
                 }
 
                 let mut write_len: usize = 0;
@@ -887,13 +920,22 @@ impl Connection {
                     match rls {
                         Ok(n) => {
                             if n == 0 {
+                                debug!("\t  local buf write to local sock zero bytes");
+
                                 return Ok(());
                             }
 
+                            debug!(
+                                "\t  write length {}, payload len {}",
+                                n,
+                                self.get_buf(LOCAL).payload_len()
+                            );
+
                             write_len += n;
                             if write_len == payload_len {
-                                self.reregister(poll, Ready::readable(), PollOpt::edge(), LOCAL)
-                                    .map_err(CliError::from)?;
+                                self.reregister(poll, Ready::readable(), PollOpt::edge(), LOCAL)?;
+
+                                return Ok(());
                             }
                         }
 
