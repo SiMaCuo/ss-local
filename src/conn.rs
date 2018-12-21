@@ -327,12 +327,12 @@ impl Connection {
         let stream = self.get_stream(is_local_stream);
         let token = self.get_token(is_local_stream);
 
-        let rls = poll.reregister(stream, token, readiness, opts);
-        if let Ok(_) = rls {
-            self.set_readiness(readiness, is_local_stream);
-        }
+        poll.reregister(stream, token, readiness, opts)
+            .and_then(|_| {
+                self.set_readiness(readiness, is_local_stream);
 
-        rls
+                Ok(())
+            })
     }
 
     fn get_stream(&self, is_local_stream: bool) -> &TcpStream {
@@ -947,19 +947,11 @@ impl Connection {
 
     pub fn handle_events(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
         let rlt = match self.stage {
-            LocalConnected => {
-                assert!(ev.readiness().is_readable());
-
-                self.handle_local_auth_method(poll)
-            }
+            LocalConnected => self.handle_local_auth_method(poll),
 
             SendMethodSelect => self.handle_local_snd_methodsel_reply(poll),
 
-            HandShake => {
-                assert!(ev.readiness().is_readable());
-
-                self.handle_handshake(poll)
-            }
+            HandShake => self.handle_handshake(poll),
 
             RemoteConnecting => self.handle_remote_connected(ev),
 
