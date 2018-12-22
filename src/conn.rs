@@ -1,6 +1,6 @@
 use super::err::*;
 use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
-use log::{debug, error, info, warn};
+use log::{debug, error, warn};
 use mio::{self, net::TcpStream, Poll, PollOpt, Ready, Token};
 use std::io::{self, Error, ErrorKind::*, Read, Write};
 use std::net::{self, IpAddr, ToSocketAddrs};
@@ -346,6 +346,10 @@ impl Connection {
         self.host.as_str()
     }
 
+    pub fn memory_usage(&self) -> usize {
+        self.local_buf.buf.capacity() + self.remote_buf.buf.capacity()
+    }
+
     fn get_stream(&self, is_local_stream: bool) -> &TcpStream {
         if is_local_stream {
             match self.local {
@@ -688,7 +692,7 @@ impl Connection {
         match cmd {
             Cmd::CONNECT => {
                 self.host = format!("{}:{}", addr, port);
-                info!("connect, host {}", self.host);
+                debug!("connect, host {}", self.host);
 
                 let addrs_result = self.host.to_socket_addrs();
                 if let Err(e) = addrs_result {

@@ -22,6 +22,30 @@ impl Service {
         }
     }
 
+    fn stat(&self) {
+        let mut conn_kes: Vec<(usize, usize)> = Vec::with_capacity(128);
+        let mut mem: f32 = 0.0;
+
+        for (_, cnt) in &self.conns {
+            let key = (
+                cnt.borrow().get_token(LOCAL).0,
+                cnt.borrow().get_token(REMOTE).0,
+            );
+            if conn_kes.contains(&key) {
+                continue;
+            }
+            conn_kes.push(key);
+
+            mem += cnt.borrow().memory_usage() as f32;
+        }
+
+        info!(
+            "stats: {} connectons, {}k mem",
+            self.conns.len(),
+            mem / 1024.0
+        );
+    }
+
     pub fn serve(&mut self) -> Result<()> {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 18109);
         let listener = TcpListener::bind(&addr).unwrap();
@@ -33,11 +57,17 @@ impl Service {
         self.poll
             .register(&listener, LISTENER, Ready::readable(), PollOpt::edge())?;
 
-        let timeout = time::Duration::from_millis(500);
+        let mut now = time::SystemTime::now();
         let mut evs = Events::with_capacity(64);
         let mut v: Vec<RcCell<Connection>> = Vec::with_capacity(128);
         loop {
-            self.poll.poll(&mut evs, Some(timeout))?;
+            self.poll
+                .poll(&mut evs, Some(time::Duration::from_millis(500)))?;
+
+            if now.elapsed().unwrap() > time::Duration::from_secs(60) {
+                self.stat();
+                now = time::SystemTime::now();
+            }
 
             for ev in &evs {
                 match ev.token() {
@@ -49,7 +79,7 @@ impl Service {
                         let cnt = self.conns.get(token.0).unwrap();
                         let rlt = cnt.borrow_mut().handle_events(&self.poll, &ev);
                         if let Err(e) = rlt {
-                            info!("close,   host {}, err {}", cnt.borrow().host(), e);
+                            debug!("close,   host {}, err {}", cnt.borrow().host(), e);
 
                             v.push(cnt.clone());
                         }
