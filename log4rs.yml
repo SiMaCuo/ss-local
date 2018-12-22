@@ -29,7 +29,7 @@ appenders:
 
 # Set the default logging level to "debug" and attach the "stdout" appender to the root
 root:
-  level: debug
+  level: info
   appenders:
     - stdout
     - ss-local

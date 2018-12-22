@@ -49,7 +49,7 @@ impl Service {
                         let cnt = self.conns.get(token.0).unwrap();
                         let rlt = cnt.borrow_mut().handle_events(&self.poll, &ev);
                         if let Err(e) = rlt {
-                            debug!("close connection, error {}  @{}", e, cnt.borrow());
+                            info!("close,   host {}, err {}", cnt.borrow().host(), e);
 
                             v.push(cnt.clone());
                         }

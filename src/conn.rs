@@ -38,7 +38,7 @@ fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> io::Result<usize> {
     let capacity = v.capacity();
 
     if start_len == capacity {
-        debug!("\t\t start_len == capacity");
+        debug!("\t\t buffer is full.");
 
         return Err(Error::from(InvalidInput));
     }
@@ -168,25 +168,15 @@ impl StreamBuf {
                 Ok(n) => {
                     total_write_len += n;
                     self.pos += n;
-                    if self.payload_len() == 0 {
-                        break Ok(total_write_len);
-                    }
-
-                    if n == 0 {
-                        debug!("\t\t total write length {}", total_write_len);
-
+                    if self.payload_len() == 0 || n == 0 {
                         break Ok(total_write_len);
                     }
                 }
 
                 Err(e) => {
                     if total_write_len > 0 {
-                        debug!("\t\t write some bytes, but some error happed {}", e);
-
                         break Ok(total_write_len);
                     } else {
-                        debug!("\t\t write to return with error {}", e);
-
                         break Err(e);
                     }
                 }
@@ -194,15 +184,20 @@ impl StreamBuf {
         };
 
         if self.payload_len() == 0 {
-            if self.buf.capacity() > 2 * BUF_ALLOC_SIZE {
-                debug!("\t\t cap len {}, resize data buf", self.buf.capacity());
-
-                self.buf.resize(BUF_ALLOC_SIZE, 0u8);
-            }
-
             self.pos = 0;
             unsafe {
                 self.buf.set_len(0);
+            }
+
+            let cap_len = self.buf.capacity();
+            if self.buf.capacity() > 2 * BUF_ALLOC_SIZE {
+                self.buf = Vec::with_capacity(BUF_ALLOC_SIZE);
+
+                debug!(
+                    "\t change buf cap len from {} to {}, resize",
+                    cap_len,
+                    self.buf.capacity()
+                );
             }
         }
 
@@ -210,6 +205,14 @@ impl StreamBuf {
     }
 
     pub fn read_from<R: Read>(&mut self, r: &mut R) -> io::Result<usize> {
+        if self.vacant_len() < MIN_VACANT_SIZE {
+            if self.head_vacant_len() > 0 {
+                self.move_payload_to_head();
+            }
+
+            self.buf.reserve(BUF_ALLOC_SIZE);
+        }
+
         do_read_from(r, &mut self.buf)
     }
 
@@ -218,14 +221,11 @@ impl StreamBuf {
         R: Read,
         W: Write,
     {
-        if self.payload_len() > 0 {
-            let _ = self.write_to(w);
-        }
-
+        let mut total_wd_len: usize = 0;
         let mut total_rd_len: usize = 0;
-        let mut loop_payload_len: usize = 0;
         let mut write_wouldblock: bool = false;
         let rls = loop {
+            let payload_befor_rd = self.payload_len();
             let rd_rls = self.read_from(r);
             match rd_rls {
                 Ok(rd_len) => {
@@ -235,63 +235,40 @@ impl StreamBuf {
 
                     total_rd_len += rd_len;
                     if write_wouldblock == false {
-                        let _ = self
-                            .write_to(w)
-                            .and_then(|wd_len| {
-                                if self.payload_len() > 0 {
-                                    debug!(
-                                        "\t read {}, write {}, payload {}",
-                                        rd_len,
-                                        wd_len,
-                                        self.payload_len()
-                                    );
+                        match self.write_to(w) {
+                            Ok(n) => total_wd_len += n,
 
-                                    loop_payload_len += self.payload_len();
+                            Err(e) => {
+                                if is_wouldblock(&e) == false {
+                                    break Err(e);
                                 }
 
-                                Ok(wd_len)
-                            })
-                            .map_err(|e| {
-                                debug!("\t write to targe failed {}", e);
                                 write_wouldblock = true;
-
-                                e
-                            });
-                    }
-
-                    if self.vacant_len() < MIN_VACANT_SIZE {
-                        if self.head_vacant_len() > 0 {
-                            self.move_payload_to_head();
+                            }
                         }
-
-                        self.buf.reserve(BUF_ALLOC_SIZE);
-                        debug!("\t cap len 01 {}", self.buf.capacity());
                     }
                 }
 
                 Err(e) => {
-                    if total_rd_len > 0 {
-                        total_rd_len += self.payload_len() - loop_payload_len;
-
-                        break Ok(total_rd_len);
-                    } else {
-                        break Err(e);
-                    }
+                    total_rd_len += self.payload_len() - payload_befor_rd;
+                    break Err(e);
                 }
             }
         };
 
         if self.payload_len() > 0 {
-            let _ = self.write_to(w);
+            let _ = self.write_to(w).and_then(|n| {
+                total_wd_len += n;
+                Ok(())
+            });
         }
 
-        if self.buf.capacity() > BUF_ALLOC_SIZE {
-            let payload_len = self.payload_len();
-            if payload_len + MIN_VACANT_SIZE < BUF_ALLOC_SIZE {
-                self.buf.reserve(BUF_ALLOC_SIZE - payload_len);
-                debug!("\t cap len 02 {}", self.buf.capacity());
-            }
-        }
+        debug!(
+            "\t copy, read {} bytes, write {} bytes, buf capacity {} bytes",
+            total_rd_len,
+            total_wd_len,
+            self.buf.capacity()
+        );
 
         rls
     }
@@ -363,6 +340,10 @@ impl Connection {
 
                 Ok(())
             })
+    }
+
+    pub fn host(&self) -> &str {
+        self.host.as_str()
     }
 
     fn get_stream(&self, is_local_stream: bool) -> &TcpStream {
@@ -707,7 +688,7 @@ impl Connection {
         match cmd {
             Cmd::CONNECT => {
                 self.host = format!("{}:{}", addr, port);
-                info!("connect to host {}", self.host);
+                info!("connect, host {}", self.host);
 
                 let addrs_result = self.host.to_socket_addrs();
                 if let Err(e) = addrs_result {
@@ -828,12 +809,10 @@ impl Connection {
     }
 
     fn handle_streaming(&mut self, poll: &Poll, ev: &mio::Event) -> Result<(), CliError> {
-        debug!("streaming, {}", *self);
-
         let token = ev.token();
         if ev.readiness().is_readable() {
             if token == self.get_token(LOCAL) {
-                debug!("\tlocal readable");
+                debug!("streaming, local readable, @{}", *self);
 
                 let buf = &mut self.remote_buf;
                 match buf.copy(self.local.as_mut().unwrap(), self.remote.as_mut().unwrap()) {
@@ -856,7 +835,7 @@ impl Connection {
                 }
 
                 if readiness != self.get_readiness(REMOTE) {
-                    debug!("\t\t change remote sock readiness {:?}", readiness);
+                    debug!("\t    change remote sock readiness {:?}", readiness);
 
                     return self
                         .reregister(poll, readiness, PollOpt::edge(), REMOTE)
@@ -865,13 +844,13 @@ impl Connection {
 
                 return Ok(());
             } else if token == self.get_token(REMOTE) {
-                debug!("\tremote readable.");
+                debug!("streaming, remote readable, @{}", *self);
 
                 let buf = &mut self.local_buf;
                 match buf.copy(self.remote.as_mut().unwrap(), self.local.as_mut().unwrap()) {
                     Ok(n) => {
                         if n == 0 {
-                            debug!("\t\t read zero bytes @{}", *self);
+                            debug!("\t    read zero bytes @{}", *self);
                             return Err(CliError::from(UnexpectedEof));
                         }
                     }
@@ -889,7 +868,7 @@ impl Connection {
                 }
 
                 if readiness != self.get_readiness(LOCAL) {
-                    debug!("\t\t change local sock readiness {:?}", readiness);
+                    debug!("\t    change local sock readiness {:?}", readiness);
 
                     return self
                         .reregister(poll, readiness, PollOpt::edge(), LOCAL)
@@ -900,39 +879,28 @@ impl Connection {
             }
         } else if ev.readiness().is_writable() {
             if token == self.get_token(LOCAL) {
-                let payload_len = self.get_buf(LOCAL).payload_len();
                 debug!(
-                    "\tlocal writable, payload length {} {}, @{}",
-                    payload_len,
-                    &self.local_buf.payload_len(),
+                    "streaming, local writable, payload len {}, @{}",
+                    self.local_buf.payload_len(),
                     *self
                 );
-
-                if payload_len == 0 {
+                if self.local_buf.payload_len() == 0 {
                     let _ = self.reregister(poll, Ready::readable(), PollOpt::edge(), LOCAL);
 
                     return Ok(());
                 }
 
-                let mut write_len: usize = 0;
                 loop {
                     let rls = (&mut self.local_buf).write_to(self.local.as_mut().unwrap());
                     match rls {
                         Ok(n) => {
                             if n == 0 {
-                                debug!("\t  local buf write to local sock zero bytes");
+                                debug!("\t    local buf write to local sock zero bytes");
 
                                 return Ok(());
                             }
 
-                            debug!(
-                                "\t  write length {}, payload len {}",
-                                n,
-                                self.get_buf(LOCAL).payload_len()
-                            );
-
-                            write_len += n;
-                            if write_len == payload_len {
+                            if self.local_buf.payload_len() == 0 {
                                 self.reregister(poll, Ready::readable(), PollOpt::edge(), LOCAL)?;
 
                                 return Ok(());
@@ -949,15 +917,17 @@ impl Connection {
                     }
                 }
             } else if token == self.get_token(REMOTE) {
-                let payload_len = self.get_buf(REMOTE).payload_len();
-                debug!("\tremote writable, payload length {}", payload_len);
+                debug!(
+                    "streaming, remote writable, payload len {}, @{}",
+                    self.remote_buf.payload_len(),
+                    *self
+                );
 
-                if payload_len == 0 {
+                if self.remote_buf.payload_len() == 0 {
                     self.reregister(poll, Ready::readable(), PollOpt::edge(), REMOTE)
                         .map_err(CliError::from)?;
                 }
 
-                let mut write_len: usize = 0;
                 loop {
                     let rls = (&mut self.remote_buf).write_to(self.remote.as_mut().unwrap());
                     match rls {
@@ -966,10 +936,15 @@ impl Connection {
                                 return Ok(());
                             }
 
-                            write_len += n;
-                            if write_len == payload_len {
-                                self.reregister(poll, Ready::readable(), PollOpt::edge(), REMOTE)
-                                    .map_err(CliError::from)?;
+                            if self.remote_buf.payload_len() == 0 {
+                                let _ = self.reregister(
+                                    poll,
+                                    Ready::readable(),
+                                    PollOpt::edge(),
+                                    REMOTE,
+                                );
+
+                                return Ok(());
                             }
                         }
 
