@@ -60,7 +60,6 @@ impl Service {
 
         let mut now = time::SystemTime::now();
         let mut evs = Events::with_capacity(64);
-        // let mut v: Vec<(Shutflag, Shutflag, RcCell<Connection>)> = Vec::with_capacity(128);
         loop {
             self.poll
                 .poll(&mut evs, Some(time::Duration::from_millis(500)))?;
