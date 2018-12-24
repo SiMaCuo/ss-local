@@ -2,6 +2,46 @@ use super::conn;
 use super::socks5::*;
 use std::{error::Error, fmt, io};
 
+#[derive(Debug, PartialEq)]
+pub enum CloseStream {
+    Keep,
+    LocalRead,
+    LocalWrite,
+    LocalBoth,
+    RemoteRead,
+    RemoteWrite,
+    RemoteBoth,
+    Both,
+}
+use self::CloseStream::*;
+
+impl fmt::Display for CloseStream {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Keep => write!(f, "Keep"),
+            LocalRead => write!(f, "Local Read"),
+            LocalWrite => write!(f, "Local Write"),
+            LocalBoth => write!(f, "Local Both"),
+            RmoteRead => write!(f, "Remote Read"),
+            RemoteWrite => write!(f, "Remote Write"),
+            RemoteBoth => write!(f, "Remote Both"),
+        }
+    }
+}
+
+impl Error for CloseStream {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self)
+    }
+}
+
+pub struct Close(CloseStream, CloseStream);
+
+impl fmt::Display for Close {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "local end {}, remote end {}", self.0, self.1)
+    }
+}
 #[derive(Debug)]
 pub enum CliError {
     StdIo(io::Error),
@@ -21,7 +61,7 @@ impl CliError {
 
 impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
+        match self {
             StdIo(ref e) => write!(f, "{}", e),
             Sock5(ref e) => match *e {
                 Rep::GENERAL_FAILURE => write!(f, "general SOCKS server failure"),

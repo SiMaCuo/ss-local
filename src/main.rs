@@ -4,6 +4,7 @@ mod conn;
 mod err;
 mod rccell;
 mod service;
+mod shut;
 mod socks5;
 
 fn main() {
