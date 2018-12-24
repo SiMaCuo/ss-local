@@ -237,6 +237,8 @@ impl StreamBuf {
 
                             Err(e) => {
                                 if is_wouldblock(&e) {
+                                    debug!("\t copy, write to target would block.");
+
                                     wd_wouldblk = true;
                                 }
                             }
@@ -260,11 +262,12 @@ impl StreamBuf {
         };
 
         debug!(
-            "\t copy, read {} bytes, write {} bytes, data len {}, buf capacity {} bytes",
+            "\t copy, read {} bytes, write {} bytes, data len {}, buf capacity {} bytes, {:?}",
             total_rd_len,
             total_wd_len,
             self.buf.len(),
-            self.buf.capacity()
+            self.buf.capacity(),
+            rls
         );
 
         rls
@@ -284,7 +287,6 @@ pub struct Connection {
     remote_readiness: Ready,
     remote_shut: Shutflag,
     stage: Stage,
-    shutdown: bool,
 }
 
 impl Connection {
@@ -302,7 +304,6 @@ impl Connection {
             remote_readiness: Ready::empty(),
             remote_shut: Shutflag::empty(),
             stage: LocalConnected,
-            shutdown: false,
         }
     }
 
@@ -332,7 +333,7 @@ impl Connection {
         opts: PollOpt,
         is_local_stream: bool,
     ) -> io::Result<()> {
-        let stream = self.get_stream(is_local_stream);
+        let stream = self.get_stream(is_local_stream).unwrap();
         let token = self.get_token(is_local_stream);
 
         poll.reregister(stream, token, readiness, opts)
@@ -351,27 +352,220 @@ impl Connection {
         self.local_buf.buf.capacity() + self.remote_buf.buf.capacity()
     }
 
-    fn get_stream(&self, is_local_stream: bool) -> &TcpStream {
-        if is_local_stream {
-            match self.local {
-                Some(ref s) => &s,
+    pub fn shutdown(&mut self, poll: &Poll, how: Shutflag, is_local_stream: bool) {
+        if self.get_shutflag(is_local_stream).contains(how) {
+            return;
+        }
 
-                None => unreachable!(),
-            }
+        let (stream_name, peer_name) = if is_local_stream {
+            ("local", "remote")
         } else {
-            match self.remote {
-                Some(ref s) => &s,
+            ("remote", "local")
+        };
+        debug!("  shutdown, {} {:?} half", stream_name, how);
+        let shut = if how == Shutflag::both() {
+            net::Shutdown::Both
+        } else if how == Shutflag::read() {
+            net::Shutdown::Read
+        } else if how == Shutflag::write() {
+            net::Shutdown::Write
+        } else {
+            unreachable!()
+        };
 
-                None => unreachable!(),
+        self.insert_shutflag(how, is_local_stream);
+
+        match shut {
+            net::Shutdown::Read => {
+                if let Some(stream) = self.get_stream(is_local_stream) {
+                    debug!("    shutdown {} read half", stream_name);
+                    let _ = stream.shutdown(net::Shutdown::Read).map_err(|e| {
+                        debug!("      failed, {}", e);
+                        e
+                    });
+
+                    if self.get_shutflag(is_local_stream) == Shutflag::both() {
+                        debug!("    deregister {}", stream_name);
+                        let _ = poll.deregister(stream).map_err(|e| {
+                            debug!("      failed, {}", e);
+                            e
+                        });
+                    }
+
+                    if self.get_buf(!is_local_stream).payload_len() == 0 {
+                        self.insert_shutflag(Shutflag::write(), !is_local_stream);
+                    }
+
+                    match self.get_stream(!is_local_stream) {
+                        Some(peer) => {
+                            if self.get_buf(!is_local_stream).payload_len() == 0 {
+                                debug!("    shutdown {} write half", peer_name);
+                                let _ = peer.shutdown(net::Shutdown::Write).map_err(|e| {
+                                    debug!("      failed, {}", e);
+                                    e
+                                });
+                                if self.get_shutflag(!is_local_stream) == Shutflag::both() {
+                                    debug!("    deregister {}", peer_name);
+                                    let _ = poll.deregister(peer).map_err(|e| {
+                                        debug!("      failed, {}", e);
+                                        e
+                                    });
+                                }
+                            }
+                        }
+
+                        None => self.insert_shutflag(Shutflag::both(), !is_local_stream),
+                    }
+                } else {
+                    self.insert_shutflag(Shutflag::both(), is_local_stream);
+                }
+            }
+
+            net::Shutdown::Write => {
+                if let Some(stream) = self.get_stream(is_local_stream) {
+                    debug!("    shutdown {} write half.", stream_name);
+                    if self.get_buf(is_local_stream).payload_len() > 0 {
+                        error!(
+                            "    has {} bytes data, when shutdown write half",
+                            self.get_buf(is_local_stream).payload_len()
+                        );
+                    }
+                    let _ = stream.shutdown(net::Shutdown::Write).map_err(|e| {
+                        debug!("      failed, {}", e);
+                        e
+                    });
+
+                    if self.get_shutflag(is_local_stream) == Shutflag::both() {
+                        debug!("    deregister {}", stream_name);
+                        let _ = poll.deregister(stream).map_err(|e| {
+                            debug!("      failed, {}", e);
+                            e
+                        });
+                    }
+
+                    match self.get_stream(!is_local_stream) {
+                        Some(peer) => {
+                            debug!("    shutdown {} read half", peer_name);
+                            let _ = peer.shutdown(net::Shutdown::Read).map_err(|e| {
+                                debug!("      failed, {}", e);
+                                e
+                            });
+                            if self.get_shutflag(!is_local_stream) == Shutflag::both() {
+                                debug!("    deregister {}", peer_name);
+                                let _ = poll.deregister(peer).map_err(|e| {
+                                    debug!("      failed, {}", e);
+                                    e
+                                });
+                            }
+                        }
+
+                        None => self.insert_shutflag(Shutflag::both(), !is_local_stream),
+                    }
+                } else {
+                    self.insert_shutflag(Shutflag::both(), is_local_stream);
+                }
+            }
+
+            net::Shutdown::Both => {
+                debug!("    shutdown {} both half", stream_name);
+                self.insert_shutflag(Shutflag::both(), is_local_stream);
+                if let Some(stream) = self.get_stream(is_local_stream) {
+                    let _ = stream
+                        .shutdown(net::Shutdown::Both)
+                        .map_err(|e| debug!("      shutdown error: {}", e));
+                    let _ = poll.deregister(stream).map_err(|e| {
+                        debug!("      failed, {}", e);
+                        e
+                    });
+                }
+
+                match self.get_stream(!is_local_stream) {
+                    Some(peer) => {
+                        if self.get_buf(!is_local_stream).payload_len() > 0 {
+                            debug!("    shutdown {} read half", peer_name);
+                            let _ = peer.shutdown(net::Shutdown::Read).map_err(|e| {
+                                debug!("      failed, {}", e);
+                                e
+                            });
+                            self.insert_shutflag(Shutflag::read(), !is_local_stream);
+                        } else {
+                            if self
+                                .get_shutflag(!is_local_stream)
+                                .contains(Shutflag::read())
+                                == false
+                            {
+                                debug!("    shutdown {} read half", peer_name);
+                                let _ = peer.shutdown(net::Shutdown::Read).map_err(|e| {
+                                    debug!("      failed, {}", e);
+                                    e
+                                });
+                            }
+                            if self
+                                .get_shutflag(!is_local_stream)
+                                .contains(Shutflag::write())
+                                == false
+                            {
+                                debug!("    shutdown {} write half", peer_name);
+                                let _ = peer.shutdown(net::Shutdown::Write).map_err(|e| {
+                                    debug!("      failed, {}", e);
+                                    e
+                                });
+                            }
+                            self.insert_shutflag(Shutflag::both(), !is_local_stream);
+                        }
+                    }
+
+                    None => self.insert_shutflag(Shutflag::both(), !is_local_stream),
+                }
             }
         }
     }
 
-    fn get_stream_mut(&mut self, is_local_stream: bool) -> &mut TcpStream {
+    pub fn get_shutflag(&self, is_local_stream: bool) -> Shutflag {
         if is_local_stream {
-            self.local.as_mut().unwrap()
+            self.local_shut
         } else {
-            self.remote.as_mut().unwrap()
+            self.remote_shut
+        }
+    }
+
+    fn insert_shutflag(&mut self, how: Shutflag, is_local_stream: bool) {
+        if is_local_stream {
+            self.local_shut |= how;
+        } else {
+            self.remote_shut |= how;
+        }
+    }
+
+    fn get_stream(&self, is_local_stream: bool) -> Option<&TcpStream> {
+        if is_local_stream {
+            match self.local {
+                Some(ref s) => Some(&s),
+
+                None => None,
+            }
+        } else {
+            match self.remote {
+                Some(ref s) => Some(&s),
+
+                None => None,
+            }
+        }
+    }
+
+    fn get_stream_mut(&mut self, is_local_stream: bool) -> Option<&mut TcpStream> {
+        if is_local_stream {
+            match self.local {
+                Some(ref mut s) => Some(s),
+
+                None => None,
+            }
+        } else {
+            match self.remote {
+                Some(ref mut s) => Some(s),
+
+                None => None,
+            }
         }
     }
 
@@ -421,68 +615,6 @@ impl Connection {
         } else {
             self.remote_readiness = readiness;
         }
-    }
-
-    fn insert_shutflag(&mut self, how: Shutflag, is_local_stream: bool) {
-        if is_local_stream {
-            self.local_shut |= how;
-        } else {
-            self.remote_shut |= how;
-        }
-    }
-
-    fn shutdown(&mut self, poll: &Poll, how: Shutflag, is_local_stream: bool) {
-        let flag = if is_local_stream {
-            self.local_shut
-        } else {
-            self.remote_shut
-        };
-
-        if flag.contains(how) {
-            return;
-        }
-
-        let mut name = if is_local_stream { "local" } else { "remote" };
-        debug!("  shutdown, {} {:?} half", name, how);
-        let shut = if how == Shutflag::both() {
-            net::Shutdown::Both
-        } else if how == Shutflag::read() {
-            net::Shutdown::Read
-        } else if how == Shutflag::write() {
-            net::Shutdown::Write
-        } else {
-            unreachable!()
-        };
-
-        self.get_stream(is_local_stream).shutdown(shut);
-
-        if is_local_stream {
-            self.local_shut |= how;
-        } else {
-            self.remote_shut |= how;
-        }
-
-        if self.get_buf(is_local_stream).payload_len() > 0 {
-            let _ = self.reregister(poll, Ready::writable(), PollOpt::edge(), is_local_stream);
-        } else {
-            if let Err(e) = self.reregister(poll, Ready::empty(), PollOpt::edge(), is_local_stream)
-            {
-                debug!(" {} re-register Ready::Empty() failed {}", name, e);
-            }
-        }
-
-        name = if is_local_stream { "remote" } else { "local" };
-        let mut readiness = Ready::readable();
-        if self.get_buf(!is_local_stream).payload_len() > 0 {
-            readiness |= Ready::writable();
-        } else {
-            debug!("  shutdown {} write half", name);
-            self.get_stream(!is_local_stream)
-                .shutdown(net::Shutdown::Write);
-        }
-
-        let _ = self.reregister(poll, readiness, PollOpt::edge(), !is_local_stream);
-        debug!("  re-register {} stream to {:?}", name, readiness);
     }
 
     // fn read_zero(&mut self, poll: &Poll, is_local_stream: bool) {
@@ -603,7 +735,7 @@ impl Connection {
         let mut no_auth = [SOCKS5_VERSION; 2];
         no_auth[1] = Method::NO_AUTH;
 
-        let rlt = self.get_stream_mut(LOCAL).write(&no_auth);
+        let rlt = self.get_stream_mut(LOCAL).unwrap().write(&no_auth);
         match rlt {
             Err(e) => {
                 if is_wouldblock(&e) {
@@ -653,6 +785,7 @@ impl Connection {
 
         let no_auth = [SOCKS5_VERSION, Method::NO_AUTH];
         self.get_stream_mut(LOCAL)
+            .unwrap()
             .write(&no_auth)
             .and_then(|_| {
                 self.stage = HandShake;
@@ -789,7 +922,7 @@ impl Connection {
             _ => {
                 let response = [SOCKS5_VERSION, ADDRTYPE_NOT_SUPPORTED, 0, V4];
                 error!("    not supported addrtype {}", atpy);
-                if let Err(e) = self.get_stream_mut(LOCAL).write(&response) {
+                if let Err(e) = self.get_stream_mut(LOCAL).unwrap().write(&response) {
                     warn!("    write ADDRTYPE_NOT_SUPPORTED failed: {}", e);
 
                     return Err((Shutflag::both(), Shutflag::both()));
@@ -838,7 +971,10 @@ impl Connection {
 
             _ => {
                 let response = [SOCKS5_VERSION, CMD_NOT_SUPPORTED, 0, V4];
-                self.get_stream_mut(LOCAL).write(&response).unwrap();
+                self.get_stream_mut(LOCAL)
+                    .unwrap()
+                    .write(&response)
+                    .unwrap();
 
                 error!(
                     "    not supported command {}",
@@ -850,20 +986,20 @@ impl Connection {
         }
     }
 
-    fn handle_remote_connected(&mut self, ev: &mio::Event) -> Result<(), (Shutflag, Shutflag)> {
+    fn handle_remote_connected(&mut self, _poll: &Poll, ev: &mio::Event) -> Result<(), (Shutflag, Shutflag)> {
         debug!("triger remote connected event @{}", *self);
 
         assert_eq!(self.get_token(REMOTE), ev.token());
 
-        let remote_stream = self.get_stream(REMOTE);
+        let remote_stream = self.get_stream(REMOTE).unwrap();
         remote_stream
             .take_error()
             .and_then(|option| {
                 if let Some(e) = option {
-                    debug!("connected FAILED {}, @{}", e, *self);
+                    debug!("connected FAILED {}", e);
 
                     let response = [SOCKS5_VERSION, HOST_UNREACHABLE, 0, V4];
-                    let _ = self.get_stream(LOCAL).write(&response);
+                    let _ = self.get_stream(LOCAL).unwrap().write(&response);
 
                     Err(e)
                 } else {
@@ -879,38 +1015,37 @@ impl Connection {
         let sock_addr = remote_stream.local_addr().unwrap();
         let port = sock_addr.port();
         let write_result;
-        let need_write_len;
         match sock_addr.ip() {
             IpAddr::V4(addr) => {
                 let mut response = [SOCKS5_VERSION, SUCCEEDED, 0, V4, 0, 0, 0, 0, 0, 0];
-                need_write_len = response.len();
                 &mut response[4..8].copy_from_slice(&addr.octets());
 
                 let bs: [u8; 2] = unsafe { mem::transmute::<u16, [u8; 2]>(port.to_be()) };
                 &mut response[8..].copy_from_slice(&bs);
-                write_result = self.get_stream_mut(LOCAL).write(&response);
+                write_result = self.get_stream_mut(LOCAL).unwrap().write(&response);
             }
 
             IpAddr::V6(addr) => {
                 let mut response = [SOCKS5_VERSION; 22];
-                need_write_len = response.len();
                 response[1] = SUCCEEDED;
                 response[2] = 0;
                 response[3] = V6;
                 &mut response[4..20].copy_from_slice(&addr.octets());
                 response[20] = (port.to_be() >> 1) as u8;
                 response[21] = (port.to_be() & 0xff) as u8;
-                write_result = self.get_stream_mut(LOCAL).write(&response);
+                write_result = self.get_stream_mut(LOCAL).unwrap().write(&response);
             }
         }
 
         if let Err(e) = write_result {
             debug!("  write connect response failed {}, close all", e);
 
-            Err((Shutflag::both(), Shutflag::both()))
-        } else {
-            Ok(())
-        }
+            return Err((Shutflag::both(), Shutflag::both()));
+        } 
+        
+        self.stage = Streaming;
+
+        Ok(())
     }
 
     fn handle_streaming(
@@ -934,7 +1069,7 @@ impl Connection {
                     Err(e) => {
                         if is_wouldblock(&e) == false {
                             debug!("    copy local to remote with error {}", e);
-
+                            
                             return Err((Shutflag::both(), Shutflag::both()));
                         }
                     }
@@ -948,7 +1083,7 @@ impl Connection {
                 if readiness != self.get_readiness(REMOTE) {
                     debug!("    change remote sock readiness {:?}", readiness);
 
-                    if let Err(e) = self.reregister(poll, readiness, PollOpt::edge(), REMOTE) {
+                    if let Err(_) = self.reregister(poll, readiness, PollOpt::edge(), REMOTE) {
                         return Err((Shutflag::both(), Shutflag::both()));
                     }
                 }
@@ -999,7 +1134,7 @@ impl Connection {
                     *self
                 );
 
-                while self.get_buf(LOCAL).payload_len() > 0 {
+                while self.local_buf.payload_len() > 0 {
                     let rls = (&mut self.local_buf).write_to(self.local.as_mut().unwrap());
                     match rls {
                         Ok(n) => {
@@ -1019,7 +1154,8 @@ impl Connection {
                         }
                     }
                 }
-
+                
+                debug!("    local buf residue {} bytes", self.local_buf.payload_len());
                 if self.local_buf.payload_len() == 0 {
                     let readiness = if self.local_shut.contains(Shutflag::read()) {
                         Ready::empty()
@@ -1043,7 +1179,7 @@ impl Connection {
                     *self
                 );
 
-                while self.get_buf(REMOTE).payload_len() > 0 {
+                while self.remote_buf.payload_len() > 0 {
                     let rls = (&mut self.remote_buf).write_to(self.remote.as_mut().unwrap());
                     match rls {
                         Ok(n) => {
@@ -1063,7 +1199,9 @@ impl Connection {
                         }
                     }
                 }
-                if self.get_buf(REMOTE).payload_len() == 0 {
+
+                debug!("    remote buf residue {} bytes", self.remote_buf.payload_len());
+                if self.remote_buf.payload_len() == 0 {
                     let readiness = if self.remote_shut.contains(Shutflag::read()) {
                         Ready::empty()
                     } else {
@@ -1097,7 +1235,7 @@ impl Connection {
 
             HandShake => self.handle_handshake(poll),
 
-            RemoteConnecting => self.handle_remote_connected(ev),
+            RemoteConnecting => self.handle_remote_connected(poll, ev),
 
             Streaming => self.handle_streaming(poll, ev),
         };

@@ -1,5 +1,6 @@
 use super::conn::{self, *};
 use super::rccell::*;
+use super::shut::*;
 use log::{debug, info};
 use mio::{net::TcpListener, net::TcpStream, Events, Poll, PollOpt, Ready, Token};
 use slab::*;
@@ -59,7 +60,7 @@ impl Service {
 
         let mut now = time::SystemTime::now();
         let mut evs = Events::with_capacity(64);
-        let mut v: Vec<RcCell<Connection>> = Vec::with_capacity(128);
+        // let mut v: Vec<(Shutflag, Shutflag, RcCell<Connection>)> = Vec::with_capacity(128);
         loop {
             self.poll
                 .poll(&mut evs, Some(time::Duration::from_millis(500)))?;
@@ -76,22 +77,16 @@ impl Service {
                     }
 
                     token @ _ => {
-                        let cnt = self.conns.get(token.0).unwrap();
-                        let rlt = cnt.borrow_mut().handle_events(&self.poll, &ev);
-                        if let Err(e) = rlt {
-                            debug!("close,   host {}, err {}", cnt.borrow().host(), e);
-
-                            v.push(cnt.clone());
+                        if self.conns.contains(token.0) {
+                            let cnt = self.conns.get(token.0).unwrap();
+                            let rlt = cnt.borrow_mut().handle_events(&self.poll, &ev);
+                            if let Err(e) = rlt {
+                                self.close_connection(e.0, e.1, &cnt.clone());
+                            }
                         }
                     }
                 }
             }
-
-            for c in &v {
-                self.close_connection(c);
-            }
-
-            v.clear();
         }
     }
 
@@ -143,19 +138,39 @@ impl Service {
         }
     }
 
-    fn close_connection(&mut self, cnt: &RcCell<Connection>) {
-        cnt.borrow_mut().shutdown(&self.poll);
+    fn close_connection(
+        &mut self,
+        local_shut: Shutflag,
+        remote_shut: Shutflag,
+        cnt: &RcCell<Connection>,
+    ) {
+        debug!(
+            "close connection Shutflag({:?}, {:?}), @{}",
+            local_shut,
+            remote_shut,
+            cnt.borrow()
+        );
+        cnt.borrow_mut().shutdown(&self.poll, local_shut, LOCAL);
+        cnt.borrow_mut().shutdown(&self.poll, remote_shut, REMOTE);
 
-        let mut index = cnt.borrow().get_token(LOCAL).0;
-        if self.conns.contains(index) {
-            self.conns.remove(index);
-            cnt.borrow_mut().set_token(Token(std::usize::MAX), LOCAL);
+        let mut shut = cnt.borrow().get_shutflag(LOCAL);
+        if shut == Shutflag::both() {
+            debug!("  remove LOCAL end, {}", cnt.borrow().host());
+            let index = cnt.borrow().get_token(LOCAL).0;
+            if self.conns.contains(index) {
+                self.conns.remove(index);
+                cnt.borrow_mut().set_token(Token(std::usize::MAX), LOCAL);
+            }
         }
 
-        index = cnt.borrow().get_token(REMOTE).0;
-        if self.conns.contains(index) {
-            self.conns.remove(index);
-            cnt.borrow_mut().set_token(Token(std::usize::MAX), REMOTE);
+        shut = cnt.borrow().get_shutflag(REMOTE);
+        if shut == Shutflag::both() {
+            debug!("  remove REMOTE end, {}", cnt.borrow().host());
+            let index = cnt.borrow().get_token(REMOTE).0;
+            if self.conns.contains(index) {
+                self.conns.remove(index);
+                cnt.borrow_mut().set_token(Token(std::usize::MAX), REMOTE);
+            }
         }
     }
 }

@@ -1,4 +1,4 @@
-use std::{ops, fmt};
+use std::{fmt, ops};
 #[derive(Copy, PartialEq, Eq, Clone, PartialOrd, Ord)]
 pub struct Shutflag(usize);
 
@@ -21,10 +21,6 @@ impl Shutflag {
 
     pub fn both() -> Shutflag {
         Shutflag(BOTH)
-    }
-
-    pub fn bits(&self) -> usize {
-        self.0
     }
 
     pub fn contains<T: Into<Self>>(&self, other: T) -> bool {
@@ -99,24 +95,14 @@ impl<T: Into<Shutflag>> ops::SubAssign<T> for Shutflag {
 
 impl fmt::Debug for Shutflag {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        let mut one = false;
-        let flags = [
-            (Shutflag::empty(), "Live"),
-            (Shutflag::read(), "Read"),
-            (Shutflag::write(), "Write"),
-            (Shutflag::both(), "Both")];
-
-        for &(flag, msg) in &flags {
-            if self.contains(flag) {
-                if one { write!(fmt, " | ")? }
-                write!(fmt, "{}", msg)?;
-
-                one = true
-            }
-        }
-
-        if !one {
-            fmt.write_str("(empty)")?;
+        if *self == Shutflag::both() {
+            fmt.write_str("Both")?
+        } else if *self == Shutflag::write() {
+            fmt.write_str("Write")?
+        } else if *self == Shutflag::read() {
+            fmt.write_str("Read")?
+        } else {
+            fmt.write_str("(empty)")?
         }
 
         Ok(())
