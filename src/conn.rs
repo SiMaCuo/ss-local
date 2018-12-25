@@ -8,6 +8,7 @@ use std::net::{self, IpAddr, ToSocketAddrs};
 use std::{cmp, fmt, mem, ptr, str};
 
 const BUF_ALLOC_SIZE: usize = 4096;
+const MAX_RDWD_SIZE: usize = 4 * BUF_ALLOC_SIZE;
 const MIN_VACANT_SIZE: usize = 128;
 
 pub const LOCAL: bool = true;
@@ -219,28 +220,48 @@ impl StreamBuf {
             }
 
             self.buf.reserve(BUF_ALLOC_SIZE);
+            debug!(
+                "  read_from, reserve space data len {}, capacity {}",
+                self.buf.len(),
+                self.buf.capacity()
+            );
         }
 
         do_read_from(r, &mut self.buf)
     }
 
     pub fn copy(&mut self, r: &mut TcpStream, w: &mut TcpStream) -> io::Result<usize> {
-        let mut total_wd_len: usize = 0;
-        let mut total_rd_len: usize = 0;
+        debug!("  copying...., payload {} bytes", self.payload_len());
+        let mut wd_len: usize = 0;
+        let mut rd_len: usize = 0;
         let mut wd_wouldblk: bool = false;
+
+        if self.payload_len() > 0 {
+            if let Ok(n) = self.write_to(w) {
+                wd_len += n;
+            }
+
+            debug!("    write len {} ", wd_len);
+        }
+
+        if self.payload_len() > MAX_RDWD_SIZE {
+            return Err(Error::from(Other));
+        }
+
         let rls = loop {
             let payload_befor_rd = self.payload_len();
-            let rd_rls = self.read_from(r);
-            match rd_rls {
-                Ok(rd_len) => {
-                    total_rd_len += rd_len;
-                    if self.payload_len() > 0 && wd_wouldblk == false {
+            match self.read_from(r) {
+                Ok(n) => {
+                    rd_len += n;
+                    if self.payload_len() > 0 && wd_len < MAX_RDWD_SIZE && wd_wouldblk == false {
                         match self.write_to(w) {
-                            Ok(n) => total_wd_len += n,
+                            Ok(n) => {
+                                wd_len += n;
+                            }
 
                             Err(e) => {
                                 if is_wouldblock(&e) {
-                                    debug!("\t copy, write to target would block.");
+                                    debug!("\t write to target would block.");
 
                                     wd_wouldblk = true;
                                 }
@@ -248,26 +269,40 @@ impl StreamBuf {
                         }
                     }
 
-                    if rd_len == 0 {
-                        break Ok(0);
+                    if n == 0 {
+                        break Ok(rd_len);
                     }
                 }
 
                 Err(e) => {
-                    total_rd_len += self.payload_len() - payload_befor_rd;
-                    if total_rd_len > 0 {
-                        break Ok(total_rd_len);
+                    if is_wouldblock(&e) == false {
+                        debug!("\t read error {}", e);
+
+                        break Err(e);
+                    }
+                    rd_len += self.payload_len() - payload_befor_rd;
+                    if wd_len < MAX_RDWD_SIZE && self.payload_len() > 0 {
+                        if let Ok(n) = self.write_to(w) {
+                            wd_len += n;
+                        }
                     }
 
-                    break Err(e);
+                    if rd_len > 0 {
+                        break Ok(rd_len);
+                    }
                 }
+            }
+
+            if rd_len + wd_len >= 3 * MAX_RDWD_SIZE {
+                debug!("\t\t out range: rd_len {}, wd_len {}", rd_len, wd_len);
+                break Err(Error::from(Other));
             }
         };
 
         debug!(
             "\t copy, read {} bytes, write {} bytes, data len {}, buf capacity {} bytes, {:?}",
-            total_rd_len,
-            total_wd_len,
+            rd_len,
+            wd_len,
             self.buf.len(),
             self.buf.capacity(),
             rls
@@ -1016,15 +1051,21 @@ impl Connection {
             if token == self.get_token(LOCAL) {
                 debug!("streaming, local readable, @{}", *self);
 
-                let buf = &mut self.remote_buf;
-                match buf.copy(self.local.as_mut().unwrap(), self.remote.as_mut().unwrap()) {
+                let mut rd: usize = usize::max_value();
+                let rls = (&mut self.remote_buf)
+                    .copy(self.local.as_mut().unwrap(), self.remote.as_mut().unwrap());
+                match rls {
                     Ok(n) => {
-                        if n == 0 {
-                            return Err((Shutflag::read(), Shutflag::empty()));
-                        }
+                        rd = n;
                     }
 
                     Err(e) => {
+                        if e.kind() == Other {
+                            debug!("  re-register local readable, level trigger");
+                            let _ =
+                                self.reregister(poll, Ready::readable(), PollOpt::level(), LOCAL);
+                        }
+
                         if is_wouldblock(&e) == false {
                             debug!("    copy local to remote with error {}", e);
 
@@ -1034,7 +1075,7 @@ impl Connection {
                 }
 
                 let mut readiness = Ready::readable();
-                if buf.payload_len() > 0 {
+                if self.remote_buf.payload_len() > 0 {
                     readiness |= Ready::writable();
                 }
 
@@ -1048,20 +1089,30 @@ impl Connection {
                     }
                 }
 
-                return Ok(());
+                if rd == 0 {
+                    if readiness.contains(Ready::writable()) {
+                        return Err((Shutflag::read(), Shutflag::empty()));
+                    } else {
+                        return Err((Shutflag::read(), Shutflag::write()));
+                    }
+                }
             } else if token == self.get_token(REMOTE) {
                 debug!("streaming, remote readable, @{}", *self);
 
-                let buf = &mut self.local_buf;
-                match buf.copy(self.remote.as_mut().unwrap(), self.local.as_mut().unwrap()) {
+                let mut rd: usize = usize::max_value();
+                let rls = (&mut self.local_buf)
+                    .copy(self.remote.as_mut().unwrap(), self.local.as_mut().unwrap());
+                match rls {
                     Ok(n) => {
-                        if n == 0 {
-                            return Err((Shutflag::empty(), Shutflag::read()));
-                        }
+                        rd = n;
                     }
 
                     Err(e) => {
-                        if is_wouldblock(&e) == false {
+                        if e.kind() == Other {
+                            debug!("  re-register remote readable, level trigger");
+                            let _ =
+                                self.reregister(poll, Ready::readable(), PollOpt::level(), REMOTE);
+                        } else if is_wouldblock(&e) == false {
                             debug!("    copy remote to local with error {}", e);
 
                             return Err((Shutflag::both(), Shutflag::both()));
@@ -1070,7 +1121,7 @@ impl Connection {
                 }
 
                 let mut readiness = Ready::readable();
-                if buf.payload_len() > 0 {
+                if self.local_buf.payload_len() > 0 {
                     readiness |= Ready::writable();
                 }
 
@@ -1083,11 +1134,17 @@ impl Connection {
                         return Err((Shutflag::both(), Shutflag::both()));
                     }
                 }
+
+                if rd == 0 {
+                    if readiness.contains(Ready::writable()) {
+                        return Err((Shutflag::empty(), Shutflag::read()));
+                    } else {
+                        return Err((Shutflag::write(), Shutflag::read()));
+                    }
+                }
             } else {
                 unreachable!();
             }
-
-            return Ok(());
         } else if ev.readiness().is_writable() {
             if token == self.get_token(LOCAL) {
                 debug!(
