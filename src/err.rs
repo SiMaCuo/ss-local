@@ -4,25 +4,42 @@ use std::{error::Error, fmt, io};
 #[derive(Debug)]
 pub enum CliError {
     StdIo(io::Error),
+    ExceedWriteSize,
     Sock5(u8),
 }
 
 use self::CliError::*;
 
+impl CliError {
+    pub fn wouldblock(&self) -> bool {
+        match self {
+            StdIo(ref e) => {
+                return e.kind() == io::ErrorKind::WouldBlock
+                    || e.kind() == io::ErrorKind::Interrupted;
+            }
+
+            _ => false,
+        }
+    }
+}
+
 impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             StdIo(ref e) => write!(f, "{}", e),
+            ExceedWriteSize => f.write_str(
+                "Exceeded the maximum write limit, please wait for the next write event to trigger",
+            ),
             Sock5(ref e) => match *e {
-                Rep::GENERAL_FAILURE => write!(f, "general SOCKS server failure"),
-                Rep::CONNECT_DISALLOWED => write!(f, "connection not allowed by ruleset"),
-                Rep::NETWORK_UNREACHABLE => write!(f, "network unreachable"),
-                Rep::HOST_UNREACHABLE => write!(f, "host unreachable"),
-                Rep::CONNECT_REFUSED => write!(f, "connection refused"),
-                Rep::TTL_EXPIRED => write!(f, "ttl expired"),
-                Rep::CMD_NOT_SUPPORTED => write!(f, "command not supported"),
-                Rep::ADDRTYPE_NOT_SUPPORTED => write!(f, "address type not supported"),
-                Method::NO_ACCEPT_METHOD => write!(f, "no acceptable methods"),
+                Rep::GENERAL_FAILURE => f.write_str("general SOCKS server failure"),
+                Rep::CONNECT_DISALLOWED => f.write_str("connection not allowed by ruleset"),
+                Rep::NETWORK_UNREACHABLE => f.write_str("network unreachable"),
+                Rep::HOST_UNREACHABLE => f.write_str("host unreachable"),
+                Rep::CONNECT_REFUSED => f.write_str("connection refused"),
+                Rep::TTL_EXPIRED => f.write_str("ttl expired"),
+                Rep::CMD_NOT_SUPPORTED => f.write_str("command not supported"),
+                Rep::ADDRTYPE_NOT_SUPPORTED => f.write_str("address type not supported"),
+                Method::NO_ACCEPT_METHOD => f.write_str("no acceptable methods"),
                 _ => unreachable!(),
             },
         }

@@ -23,10 +23,11 @@ impl Service {
         }
     }
 
-    fn stat(&self) {
+    fn stats(&self) {
         let mut conn_kes: Vec<(usize, usize)> = Vec::with_capacity(128);
         let mut mem: f32 = 0.0;
-
+        let mut v: Vec<String> = Vec::new();
+        v.push("\n".to_string());
         for (_, cnt) in &self.conns {
             let key = (
                 cnt.borrow().get_token(LOCAL).0,
@@ -37,6 +38,7 @@ impl Service {
             }
             conn_kes.push(key);
 
+            v.push(format!("\t{}\n", cnt.borrow().desc()));
             mem += cnt.borrow().memory_usage() as f32;
         }
 
@@ -45,6 +47,7 @@ impl Service {
             self.conns.len(),
             mem / 1024.0
         );
+        info!("{}", &v.concat());
     }
 
     pub fn serve(&mut self) -> Result<()> {
@@ -64,8 +67,8 @@ impl Service {
             self.poll
                 .poll(&mut evs, Some(time::Duration::from_millis(500)))?;
 
-            if now.elapsed().unwrap() > time::Duration::from_secs(60) {
-                self.stat();
+            if now.elapsed().unwrap() > time::Duration::from_secs(20) {
+                self.stats();
                 now = time::SystemTime::now();
             }
 

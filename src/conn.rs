@@ -1,4 +1,4 @@
-use super::err::*;
+use super::err::{CliError::*, *};
 use super::shut::*;
 use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
 use log::{debug, error, warn};
@@ -9,6 +9,9 @@ use std::{cmp, fmt, mem, ptr, str};
 
 const BUF_ALLOC_SIZE: usize = 4096;
 const MIN_VACANT_SIZE: usize = 128;
+const MAX_DOUBLE_REVERSE_SIZE: usize = 32 * BUF_ALLOC_SIZE;
+const STEP_REVERSE_SIZE: usize = 8 * BUF_ALLOC_SIZE;
+const MAX_WRITE_SIZE: usize = 4 * BUF_ALLOC_SIZE;
 
 pub const LOCAL: bool = true;
 pub const REMOTE: bool = false;
@@ -34,14 +37,14 @@ pub fn is_wouldblock(e: &io::Error) -> bool {
     return false;
 }
 
-fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> io::Result<usize> {
+fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> Result<usize, CliError> {
     let start_len = v.len();
     let capacity = v.capacity();
 
     if start_len == capacity {
         debug!("\t\t buffer is full.");
 
-        return Err(Error::from(InvalidInput));
+        return Err(CliError::from(InvalidInput));
     }
 
     let mut g = Guard {
@@ -56,12 +59,17 @@ fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> io::Result<usize> {
         match r.read(&mut g.buf[g.len..]) {
             Ok(n) => {
                 g.len += n;
-                if n == 0 || g.len == g.buf.capacity() {
+                if n == 0 {
+                    debug!("\t  peer close read half");
+                    break Ok(0);
+                }
+
+                if g.len == g.buf.capacity() {
                     return Ok(g.len - start_len);
                 }
             }
 
-            Err(e) => return Err(e),
+            Err(e) => return Err(CliError::from(e)),
         }
     }
 }
@@ -150,14 +158,14 @@ impl StreamBuf {
         self.pos = 0;
     }
 
-    pub fn write_to(&mut self, w: &mut TcpStream) -> io::Result<usize> {
+    pub fn write_to(&mut self, w: &mut TcpStream) -> Result<usize, CliError> {
         if self.payload_len() == 0 {
             debug!("\t\t write_to, buffer is empty.");
 
             return Ok(0);
         }
 
-        let mut total_write_len: usize = 0;
+        let mut write_len: usize = 0;
         let rls = loop {
             let result = if self.payload_len() > BUF_ALLOC_SIZE {
                 w.write(&self.buf[self.pos..self.pos + BUF_ALLOC_SIZE])
@@ -167,29 +175,36 @@ impl StreamBuf {
 
             match result {
                 Ok(n) => {
-                    total_write_len += n;
+                    write_len += n;
                     self.pos += n;
                     if self.payload_len() == 0 || n == 0 {
                         if n == 0 {
-                            debug!("\t\t  write_to, write zero byte.");
+                            debug!("\t\t  write to, write zero byte.");
                             if let Ok(Some(e)) = w.take_error() {
                                 debug!("\t\t\t err {}", e);
                             }
                         }
-                        break Ok(total_write_len);
+
+                        break Ok(write_len);
                     }
+                    // else if write_len >= MAX_WRITE_SIZE {
+                    //     break Err(ExceedWriteSize);
+                    // }
                 }
 
                 Err(e) => {
-                    debug!("\t\t  write_to, {}", e);
-                    if total_write_len > 0 {
-                        break Ok(total_write_len);
+                    if is_wouldblock(&e) {
+                        debug!("\t\t  write to failed, WouldBlock");
                     } else {
-                        break Err(e);
+                        debug!("\t\t  write to failed {}", e);
                     }
+
+                    break Err(CliError::from(e));
                 }
             }
         };
+
+        debug!("\t write {} bytes", write_len);
 
         if self.payload_len() == 0 {
             self.pos = 0;
@@ -198,7 +213,7 @@ impl StreamBuf {
             }
 
             let cap_len = self.buf.capacity();
-            if self.buf.capacity() > 2 * BUF_ALLOC_SIZE {
+            if self.buf.capacity() > BUF_ALLOC_SIZE {
                 self.buf = Vec::with_capacity(BUF_ALLOC_SIZE);
 
                 debug!(
@@ -209,69 +224,83 @@ impl StreamBuf {
             }
         }
 
+
         rls
     }
 
-    pub fn read_from<R: Read>(&mut self, r: &mut R) -> io::Result<usize> {
-        if self.vacant_len() < MIN_VACANT_SIZE {
-            if self.head_vacant_len() > 0 {
-                self.move_payload_to_head();
-            }
+    pub fn read_from<R: Read>(&mut self, r: &mut R) -> Result<usize, CliError> {
+        debug!("  read from");
 
-            self.buf.reserve(BUF_ALLOC_SIZE);
-        }
-
-        do_read_from(r, &mut self.buf)
-    }
-
-    pub fn copy(&mut self, r: &mut TcpStream, w: &mut TcpStream) -> io::Result<usize> {
-        let mut total_wd_len: usize = 0;
-        let mut total_rd_len: usize = 0;
-        let mut wd_wouldblk: bool = false;
+        let mut read_len: usize = 0;
         let rls = loop {
-            let payload_befor_rd = self.payload_len();
-            let rd_rls = self.read_from(r);
-            match rd_rls {
-                Ok(rd_len) => {
-                    total_rd_len += rd_len;
-                    if self.payload_len() > 0 && wd_wouldblk == false {
-                        match self.write_to(w) {
-                            Ok(n) => total_wd_len += n,
+            if self.tail_vacant_len() < MIN_VACANT_SIZE {
+                if self.head_vacant_len() > 0 {
+                    self.move_payload_to_head();
+                }
 
-                            Err(e) => {
-                                if is_wouldblock(&e) {
-                                    debug!("\t copy, write to target would block.");
+                if self.vacant_len() < MIN_VACANT_SIZE {
+                    debug!("\t    {}, {}", self.buf.capacity()*2, MAX_DOUBLE_REVERSE_SIZE);
 
-                                    wd_wouldblk = true;
-                                }
-                            }
-                        }
+                    if self.buf.capacity() * 2 < MAX_DOUBLE_REVERSE_SIZE {
+                        self.buf.reserve(self.buf.capacity());
+                    } else {
+                        self.buf.reserve(STEP_REVERSE_SIZE);
                     }
 
-                    if rd_len == 0 {
+                    debug!(
+                        "\t  reserve data len {}, cap len {}, reserve size {}",
+                        self.payload_len(),
+                        self.buf.capacity(),
+                        self.buf.capacity() - self.buf.len()
+                    );
+                }
+            }
+
+            let old_paylod_len = self.payload_len();
+            match do_read_from(r, &mut self.buf) {
+                Ok(n) => {
+                    read_len += n;
+                    if n == 0 {
+                        read_len += self.payload_len() - old_paylod_len;
                         break Ok(0);
                     }
                 }
 
                 Err(e) => {
-                    total_rd_len += self.payload_len() - payload_befor_rd;
-                    if total_rd_len > 0 {
-                        break Ok(total_rd_len);
-                    }
+                    read_len += self.payload_len() - old_paylod_len;
 
                     break Err(e);
                 }
             }
         };
 
-        debug!(
-            "\t copy, read {} bytes, write {} bytes, data len {}, buf capacity {} bytes, {:?}",
-            total_rd_len,
-            total_wd_len,
-            self.buf.len(),
-            self.buf.capacity(),
-            rls
-        );
+        debug!("\t read {} bytes", read_len);
+
+        rls
+    }
+
+    pub fn copy(&mut self, r: &mut TcpStream, w: &mut TcpStream) -> Result<usize, CliError> {
+        debug!("  copy....");
+
+        let rls = self.read_from(r);
+        if self.payload_len() > 0 {
+            let _ = self.write_to(w);
+        }
+
+        match &rls {
+            Err(e) if e.wouldblock() => debug!(
+                "\t data len left {}, buf capacity {},  WouldBlock",
+                self.payload_len(),
+                self.buf.capacity()
+            ),
+
+            _ => debug!(
+                "\t data len left {}, buf capacity {}, {:?}",
+                self.payload_len(),
+                self.buf.capacity(),
+                rls
+            ),
+        }
 
         rls
     }
@@ -323,8 +352,12 @@ impl Connection {
             .and_then(|_| {
                 self.set_stream(handle, is_local_stream);
                 self.set_token(token, is_local_stream);
-                self.set_readiness(readiness, is_local_stream);
 
+                if is_local_stream {
+                    self.local_readiness = readiness;
+                } else {
+                    self.remote_readiness = readiness;
+                }
                 Ok(())
             })
     }
@@ -341,8 +374,11 @@ impl Connection {
 
         poll.reregister(stream, token, readiness, opts)
             .and_then(|_| {
-                self.set_readiness(readiness, is_local_stream);
-
+                if is_local_stream {
+                    self.local_readiness = readiness;
+                } else {
+                    self.remote_readiness = readiness;
+                }
                 Ok(())
             })
     }
@@ -353,6 +389,19 @@ impl Connection {
 
     pub fn memory_usage(&self) -> usize {
         self.local_buf.buf.capacity() + self.remote_buf.buf.capacity()
+    }
+
+    pub fn desc(&self) -> String {
+        format!(
+            "({:?}, {:?}), data:({} bs, {} bs), mem:({} k, {} k), {}",
+            self.local_shut,
+            self.remote_shut,
+            self.get_buf(LOCAL).payload_len(),
+            self.get_buf(REMOTE).payload_len(),
+            self.get_buf(LOCAL).buf.capacity() as f32 / 1024.0,
+            self.get_buf(REMOTE).buf.capacity() as f32 / 1024.0,
+            *self
+        )
     }
 
     pub fn shutdown(&mut self, poll: &Poll, how: Shutflag, is_local_stream: bool) {
@@ -395,30 +444,30 @@ impl Connection {
                         });
                     }
 
-                    if self.get_buf(!is_local_stream).payload_len() == 0 {
-                        self.insert_shutflag(Shutflag::write(), !is_local_stream);
-                    }
-
-                    match self.get_stream(!is_local_stream) {
-                        Some(peer) => {
-                            if self.get_buf(!is_local_stream).payload_len() == 0 {
-                                debug!("    shutdown {} write half", peer_name);
-                                let _ = peer.shutdown(net::Shutdown::Write).map_err(|e| {
-                                    debug!("      failed, {}", e);
-                                    e
-                                });
-                                if self.get_shutflag(!is_local_stream) == Shutflag::both() {
-                                    debug!("    deregister {}", peer_name);
-                                    let _ = poll.deregister(peer).map_err(|e| {
-                                        debug!("      failed, {}", e);
-                                        e
-                                    });
-                                }
-                            }
-                        }
-
-                        None => self.insert_shutflag(Shutflag::both(), !is_local_stream),
-                    }
+                    // if self.get_buf(!is_local_stream).payload_len() == 0 {
+                    //     self.insert_shutflag(Shutflag::write(), !is_local_stream);
+                    // }
+                    //
+                    // match self.get_stream(!is_local_stream) {
+                    //     Some(peer) => {
+                    //         if self.get_buf(!is_local_stream).payload_len() == 0 {
+                    //             debug!("    shutdown {} write half", peer_name);
+                    //             let _ = peer.shutdown(net::Shutdown::Write).map_err(|e| {
+                    //                 debug!("      failed, {}", e);
+                    //                 e
+                    //             });
+                    //             if self.get_shutflag(!is_local_stream) == Shutflag::both() {
+                    //                 debug!("    deregister {}", peer_name);
+                    //                 let _ = poll.deregister(peer).map_err(|e| {
+                    //                     debug!("      failed, {}", e);
+                    //                     e
+                    //                 });
+                    //             }
+                    //         }
+                    //     }
+                    //
+                    //     None => self.insert_shutflag(Shutflag::both(), !is_local_stream),
+                    // }
                 } else {
                     self.insert_shutflag(Shutflag::both(), is_local_stream);
                 }
@@ -446,24 +495,24 @@ impl Connection {
                         });
                     }
 
-                    match self.get_stream(!is_local_stream) {
-                        Some(peer) => {
-                            debug!("    shutdown {} read half", peer_name);
-                            let _ = peer.shutdown(net::Shutdown::Read).map_err(|e| {
-                                debug!("      failed, {}", e);
-                                e
-                            });
-                            if self.get_shutflag(!is_local_stream) == Shutflag::both() {
-                                debug!("    deregister {}", peer_name);
-                                let _ = poll.deregister(peer).map_err(|e| {
-                                    debug!("      failed, {}", e);
-                                    e
-                                });
-                            }
-                        }
-
-                        None => self.insert_shutflag(Shutflag::both(), !is_local_stream),
-                    }
+                    // match self.get_stream(!is_local_stream) {
+                    //     Some(peer) => {
+                    //         debug!("    shutdown {} read half", peer_name);
+                    //         let _ = peer.shutdown(net::Shutdown::Read).map_err(|e| {
+                    //             debug!("      failed, {}", e);
+                    //             e
+                    //         });
+                    //         if self.get_shutflag(!is_local_stream) == Shutflag::both() {
+                    //             debug!("    deregister {}", peer_name);
+                    //             let _ = poll.deregister(peer).map_err(|e| {
+                    //                 debug!("      failed, {}", e);
+                    //                 e
+                    //             });
+                    //         }
+                    //     }
+                    //
+                    //     None => self.insert_shutflag(Shutflag::both(), !is_local_stream),
+                    // }
                 } else {
                     self.insert_shutflag(Shutflag::both(), is_local_stream);
                 }
@@ -482,44 +531,44 @@ impl Connection {
                     });
                 }
 
-                match self.get_stream(!is_local_stream) {
-                    Some(peer) => {
-                        if self.get_buf(!is_local_stream).payload_len() > 0 {
-                            debug!("    shutdown {} read half", peer_name);
-                            let _ = peer.shutdown(net::Shutdown::Read).map_err(|e| {
-                                debug!("      failed, {}", e);
-                                e
-                            });
-                            self.insert_shutflag(Shutflag::read(), !is_local_stream);
-                        } else {
-                            if self
-                                .get_shutflag(!is_local_stream)
-                                .contains(Shutflag::read())
-                                == false
-                            {
-                                debug!("    shutdown {} read half", peer_name);
-                                let _ = peer.shutdown(net::Shutdown::Read).map_err(|e| {
-                                    debug!("      failed, {}", e);
-                                    e
-                                });
-                            }
-                            if self
-                                .get_shutflag(!is_local_stream)
-                                .contains(Shutflag::write())
-                                == false
-                            {
-                                debug!("    shutdown {} write half", peer_name);
-                                let _ = peer.shutdown(net::Shutdown::Write).map_err(|e| {
-                                    debug!("      failed, {}", e);
-                                    e
-                                });
-                            }
-                            self.insert_shutflag(Shutflag::both(), !is_local_stream);
-                        }
-                    }
-
-                    None => self.insert_shutflag(Shutflag::both(), !is_local_stream),
-                }
+                // match self.get_stream(!is_local_stream) {
+                //     Some(peer) => {
+                //         if self.get_buf(!is_local_stream).payload_len() > 0 {
+                //             debug!("    shutdown {} read half", peer_name);
+                //             let _ = peer.shutdown(net::Shutdown::Read).map_err(|e| {
+                //                 debug!("      failed, {}", e);
+                //                 e
+                //             });
+                //             self.insert_shutflag(Shutflag::read(), !is_local_stream);
+                //         } else {
+                //             if self
+                //                 .get_shutflag(!is_local_stream)
+                //                 .contains(Shutflag::read())
+                //                 == false
+                //             {
+                //                 debug!("    shutdown {} read half", peer_name);
+                //                 let _ = peer.shutdown(net::Shutdown::Read).map_err(|e| {
+                //                     debug!("      failed, {}", e);
+                //                     e
+                //                 });
+                //             }
+                //             if self
+                //                 .get_shutflag(!is_local_stream)
+                //                 .contains(Shutflag::write())
+                //                 == false
+                //             {
+                //                 debug!("    shutdown {} write half", peer_name);
+                //                 let _ = peer.shutdown(net::Shutdown::Write).map_err(|e| {
+                //                     debug!("      failed, {}", e);
+                //                     e
+                //                 });
+                //             }
+                //             self.insert_shutflag(Shutflag::both(), !is_local_stream);
+                //         }
+                //     }
+                //
+                //     None => self.insert_shutflag(Shutflag::both(), !is_local_stream),
+                // }
             }
         }
     }
@@ -612,12 +661,49 @@ impl Connection {
         }
     }
 
-    fn set_readiness(&mut self, readiness: Ready, is_local_stream: bool) {
-        if is_local_stream {
-            self.local_readiness = readiness;
-        } else {
-            self.remote_readiness = readiness;
+    fn insert_readiness(
+        &mut self,
+        poll: &Poll,
+        readiness: Ready,
+        is_local_stream: bool,
+    ) -> io::Result<()> {
+        let mut ready = self.get_readiness(is_local_stream);
+        ready.insert(readiness);
+        if ready != readiness {
+            return self.set_readiness(poll, ready, is_local_stream);
         }
+
+        Ok(())
+    }
+
+    fn remove_readiness(
+        &mut self,
+        poll: &Poll,
+        readiness: Ready,
+        is_local_stream: bool,
+    ) -> io::Result<()> {
+        let mut ready = self.get_readiness(is_local_stream);
+        ready.remove(readiness);
+        if ready != readiness {
+            return self.set_readiness(poll, ready, is_local_stream);
+        }
+
+        Ok(())
+    }
+
+    fn set_readiness(
+        &mut self,
+        poll: &Poll,
+        readiness: Ready,
+        is_local_stream: bool,
+    ) -> io::Result<()> {
+        if readiness == self.get_readiness(is_local_stream) {
+            return Ok(());
+        }
+
+        let name = if is_local_stream { "local" } else { "remote" };
+        debug!("\t  change {} stream readiness {:?}", name, readiness);
+        self.reregister(poll, readiness, PollOpt::edge(), is_local_stream)
     }
 
     pub fn ev_auth_method(&mut self, poll: &Poll) -> Result<(), (Shutflag, Shutflag)> {
@@ -633,7 +719,7 @@ impl Connection {
             }
 
             Err(e) => {
-                if is_wouldblock(&e) == false {
+                if e.wouldblock() == false {
                     debug!("  error {}, close all", e);
 
                     return Err((Shutflag::both(), Shutflag::both()));
@@ -762,7 +848,7 @@ impl Connection {
             }
 
             Err(e) => {
-                if is_wouldblock(&e) == false {
+                if e.wouldblock() == false {
                     debug!("  read failed {}", e);
 
                     return Err((Shutflag::both(), Shutflag::both()));
@@ -942,7 +1028,7 @@ impl Connection {
 
     fn ev_nonblock_connected(
         &mut self,
-        _poll: &Poll,
+        poll: &Poll,
         ev: &mio::Event,
     ) -> Result<(), (Shutflag, Shutflag)> {
         debug!("triger remote connected event @{}", *self);
@@ -1005,6 +1091,7 @@ impl Connection {
             return Err((Shutflag::both(), Shutflag::both()));
         }
 
+        let _ = self.set_readiness(poll, Ready::readable(), REMOTE);
         self.stage = Streaming;
 
         Ok(())
@@ -1016,78 +1103,64 @@ impl Connection {
             if token == self.get_token(LOCAL) {
                 debug!("streaming, local readable, @{}", *self);
 
-                let buf = &mut self.remote_buf;
-                match buf.copy(self.local.as_mut().unwrap(), self.remote.as_mut().unwrap()) {
+                let rls = (&mut self.remote_buf)
+                    .copy(self.local.as_mut().unwrap(), self.remote.as_mut().unwrap());
+                match rls {
                     Ok(n) => {
-                        if n == 0 {
-                            return Err((Shutflag::read(), Shutflag::empty()));
+                        if self.remote_buf.payload_len() > 0 {
+                            let _ = self.insert_readiness(poll, Ready::writable(), REMOTE);
+                            if n == 0 {
+                                return Err((Shutflag::read(), Shutflag::empty()));
+                            }
+                        } else if n == 0 {
+                            return Err((Shutflag::read(), Shutflag::write()));
                         }
                     }
 
                     Err(e) => {
-                        if is_wouldblock(&e) == false {
+                        if e.wouldblock() == false {
                             debug!("    copy local to remote with error {}", e);
 
                             return Err((Shutflag::both(), Shutflag::both()));
                         }
+                        if self.remote_buf.payload_len() > 0 {
+                            let _ = self.insert_readiness(poll, Ready::writable(), REMOTE);
+                        }
                     }
                 }
-
-                let mut readiness = Ready::readable();
-                if buf.payload_len() > 0 {
-                    readiness |= Ready::writable();
-                }
-
-                if readiness != self.get_readiness(REMOTE) {
-                    debug!("    change remote sock readiness {:?}", readiness);
-
-                    if let Err(e) = self.reregister(poll, readiness, PollOpt::edge(), REMOTE) {
-                        error!("      failed {}", e);
-
-                        return Err((Shutflag::both(), Shutflag::both()));
-                    }
-                }
-
-                return Ok(());
             } else if token == self.get_token(REMOTE) {
                 debug!("streaming, remote readable, @{}", *self);
 
-                let buf = &mut self.local_buf;
-                match buf.copy(self.remote.as_mut().unwrap(), self.local.as_mut().unwrap()) {
+                let rls = (&mut self.local_buf)
+                    .copy(self.remote.as_mut().unwrap(), self.local.as_mut().unwrap());
+                match rls {
                     Ok(n) => {
-                        if n == 0 {
-                            return Err((Shutflag::empty(), Shutflag::read()));
+                        if self.local_buf.payload_len() > 0 {
+                            let _ = self.insert_readiness(poll, Ready::writable(), LOCAL);
+
+                            if n == 0 {
+                                return Err((Shutflag::empty(), Shutflag::read()));
+                            }
+                        } else if n == 0 {
+                            return Err((Shutflag::write(), Shutflag::read()));
                         }
                     }
 
                     Err(e) => {
-                        if is_wouldblock(&e) == false {
+                        if e.wouldblock() == false {
                             debug!("    copy remote to local with error {}", e);
 
                             return Err((Shutflag::both(), Shutflag::both()));
                         }
-                    }
-                }
 
-                let mut readiness = Ready::readable();
-                if buf.payload_len() > 0 {
-                    readiness |= Ready::writable();
-                }
-
-                if readiness != self.get_readiness(LOCAL) {
-                    debug!("    change local sock readiness {:?}", readiness);
-
-                    if let Err(e) = self.reregister(poll, readiness, PollOpt::edge(), LOCAL) {
-                        error!("      failed {}", e);
-
-                        return Err((Shutflag::both(), Shutflag::both()));
+                        if self.local_buf.payload_len() > 0 {
+                            let _ = self.insert_readiness(poll, Ready::writable(), LOCAL);
+                        }
                     }
                 }
             } else {
                 unreachable!();
             }
-
-            return Ok(());
         } else if ev.readiness().is_writable() {
             if token == self.get_token(LOCAL) {
                 debug!(
@@ -1096,49 +1169,34 @@ impl Connection {
                     *self
                 );
 
-                while self.local_buf.payload_len() > 0 {
-                    let rls = (&mut self.local_buf).write_to(self.local.as_mut().unwrap());
-                    match rls {
-                        Ok(n) => {
-                            if n == 0 {
-                                break;
-                            }
-                        }
-
-                        Err(e) => {
-                            if is_wouldblock(&e) {
-                                break;
-                            }
-
-                            debug!("    write local buf to local stream failed, error: {}, shutdown all.", e);
-
-                            return Err((Shutflag::both(), Shutflag::both()));
+                let rls = (&mut self.local_buf).write_to(self.local.as_mut().unwrap());
+                match rls {
+                    Ok(_) => {
+                        if self.local_buf.payload_len() == 0 {
+                            debug!("  remove {:?}", Ready::writable());
+                            let _ = self.set_readiness(poll, Ready::readable(), LOCAL);
                         }
                     }
-                }
 
-                debug!(
-                    "    local buf residue {} bytes",
-                    self.local_buf.payload_len()
-                );
+                    Err(ExceedWriteSize) => {
+                        debug!("   re-register local writable(), level trigger");
+                        let _ = self.reregister(poll, Ready::writable(), PollOpt::level(), LOCAL);
+                    }
 
-                let mut readiness = if self.get_shutflag(LOCAL).contains(Shutflag::read()) {
-                    Ready::empty()
-                } else {
-                    Ready::readable()
-                };
+                    Err(e) => {
+                        if e.wouldblock() == false {
+                            debug!(
+                                "    local stream write failed, error: {}, discard all data, close write half.",
+                                e
+                            );
 
-                readiness |= if self.local_buf.payload_len() > 0 {
-                    Ready::writable()
-                } else {
-                    Ready::empty()
-                };
+                            self.local_buf.buf = Vec::new();
+                            self.local_buf.pos = 0;
+                            let _ = self.set_readiness(poll, Ready::readable(), LOCAL);
 
-                debug!("    re-register local readiness {:?}", readiness);
-                if let Err(e) = self.reregister(poll, readiness, PollOpt::edge(), LOCAL) {
-                    debug!("      failed, {}", e);
-
-                    return Err((Shutflag::both(), Shutflag::both()));
+                            return Err((Shutflag::write(), Shutflag::read()));
+                        }
+                    }
                 }
             } else if token == self.get_token(REMOTE) {
                 debug!(
@@ -1147,49 +1205,34 @@ impl Connection {
                     *self
                 );
 
-                while self.remote_buf.payload_len() > 0 {
-                    let rls = (&mut self.remote_buf).write_to(self.remote.as_mut().unwrap());
-                    match rls {
-                        Ok(n) => {
-                            if n == 0 {
-                                break;
-                            }
-                        }
-
-                        Err(e) => {
-                            if is_wouldblock(&e) {
-                                break;
-                            }
-
-                            debug!("    write remote buf to remote stream failed, error: {}, shutdown all.", e);
-
-                            return Err((Shutflag::both(), Shutflag::both()));
+                let rls = (&mut self.remote_buf).write_to(self.remote.as_mut().unwrap());
+                match rls {
+                    Ok(_) => {
+                        if self.remote_buf.payload_len() == 0 {
+                            debug!("  remove {:?}", Ready::writable());
+                            let _ = self.set_readiness(poll, Ready::readable(), REMOTE);
                         }
                     }
-                }
 
-                debug!(
-                    "    remote buf residue {} bytes",
-                    self.remote_buf.payload_len()
-                );
+                    Err(ExceedWriteSize) => {
+                        debug!("   re-register remote writable(), level trigger");
+                        let _ = self.reregister(poll, Ready::writable(), PollOpt::level(), REMOTE);
+                    }
 
-                let mut readiness = if self.get_shutflag(REMOTE).contains(Shutflag::read()) {
-                    Ready::empty()
-                } else {
-                    Ready::readable()
-                };
+                    Err(e) => {
+                        if e.wouldblock() == false {
+                            debug!(
+                                "    local stream write failed, error: {}, discard all data, close write half.",
+                                e
+                            );
 
-                readiness |= if self.remote_buf.payload_len() > 0 {
-                    Ready::writable()
-                } else {
-                    Ready::empty()
-                };
+                            self.remote_buf.buf = Vec::new();
+                            self.remote_buf.pos = 0;
+                            let _ = self.set_readiness(poll, Ready::readable(), REMOTE);
 
-                debug!("    re-register remote readiness {:?}", readiness);
-                if let Err(e) = self.reregister(poll, readiness, PollOpt::edge(), REMOTE) {
-                    debug!("      failed, {}", e);
-
-                    return Err((Shutflag::both(), Shutflag::both()));
+                            return Err((Shutflag::read(), Shutflag::write()));
+                        }
+                    }
                 }
             } else {
                 unreachable!();
