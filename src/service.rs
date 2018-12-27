@@ -43,11 +43,14 @@ impl Service {
         }
 
         info!(
-            "stats: {} connectons, {}k mem",
-            self.conns.len(),
-            mem / 1024.0
+            "\n{}{}",
+            format!(
+                "stats: {} connections, {}k mem",
+                self.conns.len(),
+                mem / 1024.0
+            ),
+            &v.concat()
         );
-        info!("{}", &v.concat());
     }
 
     pub fn serve(&mut self) -> Result<()> {
@@ -55,7 +58,10 @@ impl Service {
         let listener = TcpListener::bind(&addr).unwrap();
         info!("Listening on: {}", addr);
 
-        let listener_token = Token(self.conns.insert(new_rc_cell(Connection::new()).clone()));
+        let listener_token = Token(
+            self.conns
+                .insert(new_rc_cell(Connection::new(false)).clone()),
+        );
         assert_eq!(listener_token, LISTENER);
 
         self.poll
@@ -113,7 +119,7 @@ impl Service {
     }
 
     pub fn create_local_connection(&mut self, handle: TcpStream) -> Result<()> {
-        let cnt = new_rc_cell(Connection::new());
+        let cnt = new_rc_cell(Connection::new(true));
         let local_token = Token(self.conns.insert(cnt.clone()));
         let rls = cnt.borrow_mut().register(
             &mut self.poll,

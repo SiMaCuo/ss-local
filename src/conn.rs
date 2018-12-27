@@ -1,4 +1,4 @@
-use super::err::{CliError::*, *};
+use super::err::{NetError::*, *};
 use super::shut::*;
 use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
 use log::{debug, error, warn};
@@ -9,9 +9,7 @@ use std::{cmp, fmt, mem, ptr, str};
 
 const BUF_ALLOC_SIZE: usize = 4096;
 const MIN_VACANT_SIZE: usize = 128;
-const MAX_DOUBLE_REVERSE_SIZE: usize = 32 * BUF_ALLOC_SIZE;
-const STEP_REVERSE_SIZE: usize = 8 * BUF_ALLOC_SIZE;
-const MAX_WRITE_SIZE: usize = 4 * BUF_ALLOC_SIZE;
+const MAX_READ_SIZE: usize = 32 * BUF_ALLOC_SIZE;
 
 pub const LOCAL: bool = true;
 pub const REMOTE: bool = false;
@@ -37,14 +35,14 @@ pub fn is_wouldblock(e: &io::Error) -> bool {
     return false;
 }
 
-fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> Result<usize, CliError> {
+fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> Result<usize, NetError> {
     let start_len = v.len();
     let capacity = v.capacity();
 
     if start_len == capacity {
         debug!("\t\t buffer is full.");
 
-        return Err(CliError::from(InvalidInput));
+        return Err(NetError::from(InvalidInput));
     }
 
     let mut g = Guard {
@@ -55,7 +53,7 @@ fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> Result<usize, CliError> 
     unsafe {
         g.buf.set_len(capacity);
     }
-    loop {
+    let rls = loop {
         match r.read(&mut g.buf[g.len..]) {
             Ok(n) => {
                 g.len += n;
@@ -65,13 +63,17 @@ fn do_read_from<R: Read>(r: &mut R, v: &mut Vec<u8>) -> Result<usize, CliError> 
                 }
 
                 if g.len == g.buf.capacity() {
-                    return Ok(g.len - start_len);
+                    break Ok(g.len - start_len);
                 }
             }
 
-            Err(e) => return Err(CliError::from(e)),
+            Err(e) => {
+                break Err(NetError::from(e));
+            }
         }
-    }
+    };
+
+    rls
 }
 
 struct StreamBuf {
@@ -80,9 +82,9 @@ struct StreamBuf {
 }
 
 impl StreamBuf {
-    pub fn new() -> StreamBuf {
+    pub fn new(use_buf: bool) -> StreamBuf {
         StreamBuf {
-            buf: Vec::with_capacity(BUF_ALLOC_SIZE),
+            buf: if use_buf { Vec::with_capacity(BUF_ALLOC_SIZE) } else { Vec::new() },
             pos: 0,
         }
     }
@@ -158,7 +160,7 @@ impl StreamBuf {
         self.pos = 0;
     }
 
-    pub fn write_to(&mut self, w: &mut TcpStream) -> Result<usize, CliError> {
+    pub fn write_to(&mut self, w: &mut TcpStream) -> Result<usize, NetError> {
         if self.payload_len() == 0 {
             debug!("\t\t write_to, buffer is empty.");
 
@@ -167,6 +169,7 @@ impl StreamBuf {
 
         let mut write_len: usize = 0;
         let rls = loop {
+            let old_paylod_len = self.payload_len();
             let result = if self.payload_len() > BUF_ALLOC_SIZE {
                 w.write(&self.buf[self.pos..self.pos + BUF_ALLOC_SIZE])
             } else {
@@ -187,19 +190,17 @@ impl StreamBuf {
 
                         break Ok(write_len);
                     }
-                    // else if write_len >= MAX_WRITE_SIZE {
-                    //     break Err(ExceedWriteSize);
-                    // }
                 }
 
                 Err(e) => {
                     if is_wouldblock(&e) {
-                        debug!("\t\t  write to failed, WouldBlock");
+                        write_len += old_paylod_len - self.payload_len();
+                        debug!("\t write failed, wouldblock");
                     } else {
-                        debug!("\t\t  write to failed {}", e);
+                        debug!("\t write failed {}", e);
                     }
 
-                    break Err(CliError::from(e));
+                    break Err(NetError::from(e));
                 }
             }
         };
@@ -228,8 +229,8 @@ impl StreamBuf {
         rls
     }
 
-    pub fn read_from<R: Read>(&mut self, r: &mut R) -> Result<usize, CliError> {
-        debug!("  read from");
+    pub fn read_from<R: Read>(&mut self, r: &mut R) -> Result<usize, NetError> {
+        debug!("  read from, payload {}", self.payload_len());
 
         let mut read_len: usize = 0;
         let rls = loop {
@@ -239,12 +240,8 @@ impl StreamBuf {
                 }
 
                 if self.vacant_len() < MIN_VACANT_SIZE {
-                    debug!("\t    {}, {}", self.buf.capacity()*2, MAX_DOUBLE_REVERSE_SIZE);
-
-                    if self.buf.capacity() * 2 < MAX_DOUBLE_REVERSE_SIZE {
+                    if self.buf.capacity() * 2 <= MAX_READ_SIZE {
                         self.buf.reserve(self.buf.capacity());
-                    } else {
-                        self.buf.reserve(STEP_REVERSE_SIZE);
                     }
 
                     debug!(
@@ -264,46 +261,35 @@ impl StreamBuf {
                         read_len += self.payload_len() - old_paylod_len;
                         break Ok(0);
                     }
+
+                    if self.payload_len() >= MAX_READ_SIZE {
+                        break Err(ExceedReadSize);
+                    }
                 }
 
                 Err(e) => {
                     read_len += self.payload_len() - old_paylod_len;
+
+                    if e.wouldblock() {
+                        debug!("\t  wouldblock");
+
+                        if self.payload_len() >= MAX_READ_SIZE {
+                            break Err(ExceedReadSize);
+                        }
+                    } else {
+                        debug!("\t  failed {}", e);
+                    }
 
                     break Err(e);
                 }
             }
         };
 
-        debug!("\t read {} bytes", read_len);
+        debug!("    read {} bytes, payload {}", read_len, self.payload_len());
 
         rls
     }
 
-    pub fn copy(&mut self, r: &mut TcpStream, w: &mut TcpStream) -> Result<usize, CliError> {
-        debug!("  copy....");
-
-        let rls = self.read_from(r);
-        if self.payload_len() > 0 {
-            let _ = self.write_to(w);
-        }
-
-        match &rls {
-            Err(e) if e.wouldblock() => debug!(
-                "\t data len left {}, buf capacity {},  WouldBlock",
-                self.payload_len(),
-                self.buf.capacity()
-            ),
-
-            _ => debug!(
-                "\t data len left {}, buf capacity {}, {:?}",
-                self.payload_len(),
-                self.buf.capacity(),
-                rls
-            ),
-        }
-
-        rls
-    }
 }
 
 pub struct Connection {
@@ -312,30 +298,34 @@ pub struct Connection {
     local_buf: StreamBuf,
     local_readiness: Ready,
     local_shut: Shutflag,
+    local_opts: PollOpt,
     remote: Option<TcpStream>,
-    host: String,
     remote_token: Token,
     remote_buf: StreamBuf,
     remote_readiness: Ready,
     remote_shut: Shutflag,
+    remote_opts: PollOpt,
     stage: Stage,
+    host: String,
 }
 
 impl Connection {
-    pub fn new() -> Self {
+    pub fn new(use_buf: bool) -> Self {
         Connection {
             local: None,
             local_token: Token::from(std::usize::MAX),
-            local_buf: StreamBuf::new(),
+            local_buf: StreamBuf::new(use_buf),
             local_readiness: Ready::empty(),
             local_shut: Shutflag::empty(),
+            local_opts: PollOpt::empty(),
             remote: None,
-            host: "*".to_string(),
             remote_token: Token::from(std::usize::MAX),
-            remote_buf: StreamBuf::new(),
+            remote_buf: StreamBuf::new(false),
             remote_readiness: Ready::empty(),
             remote_shut: Shutflag::empty(),
+            remote_opts: PollOpt::empty(),
             stage: LocalConnected,
+            host: "*".to_string(),
         }
     }
 
@@ -355,8 +345,10 @@ impl Connection {
 
                 if is_local_stream {
                     self.local_readiness = readiness;
+                    self.local_opts = opts;
                 } else {
                     self.remote_readiness = readiness;
+                    self.remote_opts = opts;
                 }
                 Ok(())
             })
@@ -376,8 +368,10 @@ impl Connection {
             .and_then(|_| {
                 if is_local_stream {
                     self.local_readiness = readiness;
+                    self.local_opts = opts;
                 } else {
                     self.remote_readiness = readiness;
+                    self.remote_opts = opts;
                 }
                 Ok(())
             })
@@ -409,10 +403,10 @@ impl Connection {
             return;
         }
 
-        let (stream_name, peer_name) = if is_local_stream {
-            ("local", "remote")
+        let stream_name = if is_local_stream {
+            "local"
         } else {
-            ("remote", "local")
+            "remote"
         };
         debug!("  shutdown, {} {:?} half", stream_name, how);
         let shut = if how == Shutflag::both() {
@@ -443,31 +437,6 @@ impl Connection {
                             e
                         });
                     }
-
-                    // if self.get_buf(!is_local_stream).payload_len() == 0 {
-                    //     self.insert_shutflag(Shutflag::write(), !is_local_stream);
-                    // }
-                    //
-                    // match self.get_stream(!is_local_stream) {
-                    //     Some(peer) => {
-                    //         if self.get_buf(!is_local_stream).payload_len() == 0 {
-                    //             debug!("    shutdown {} write half", peer_name);
-                    //             let _ = peer.shutdown(net::Shutdown::Write).map_err(|e| {
-                    //                 debug!("      failed, {}", e);
-                    //                 e
-                    //             });
-                    //             if self.get_shutflag(!is_local_stream) == Shutflag::both() {
-                    //                 debug!("    deregister {}", peer_name);
-                    //                 let _ = poll.deregister(peer).map_err(|e| {
-                    //                     debug!("      failed, {}", e);
-                    //                     e
-                    //                 });
-                    //             }
-                    //         }
-                    //     }
-                    //
-                    //     None => self.insert_shutflag(Shutflag::both(), !is_local_stream),
-                    // }
                 } else {
                     self.insert_shutflag(Shutflag::both(), is_local_stream);
                 }
@@ -494,25 +463,6 @@ impl Connection {
                             e
                         });
                     }
-
-                    // match self.get_stream(!is_local_stream) {
-                    //     Some(peer) => {
-                    //         debug!("    shutdown {} read half", peer_name);
-                    //         let _ = peer.shutdown(net::Shutdown::Read).map_err(|e| {
-                    //             debug!("      failed, {}", e);
-                    //             e
-                    //         });
-                    //         if self.get_shutflag(!is_local_stream) == Shutflag::both() {
-                    //             debug!("    deregister {}", peer_name);
-                    //             let _ = poll.deregister(peer).map_err(|e| {
-                    //                 debug!("      failed, {}", e);
-                    //                 e
-                    //             });
-                    //         }
-                    //     }
-                    //
-                    //     None => self.insert_shutflag(Shutflag::both(), !is_local_stream),
-                    // }
                 } else {
                     self.insert_shutflag(Shutflag::both(), is_local_stream);
                 }
@@ -525,50 +475,12 @@ impl Connection {
                     let _ = stream
                         .shutdown(net::Shutdown::Both)
                         .map_err(|e| debug!("      shutdown error: {}", e));
+                    debug!("    degregister {}", stream_name);
                     let _ = poll.deregister(stream).map_err(|e| {
                         debug!("      failed, {}", e);
                         e
                     });
                 }
-
-                // match self.get_stream(!is_local_stream) {
-                //     Some(peer) => {
-                //         if self.get_buf(!is_local_stream).payload_len() > 0 {
-                //             debug!("    shutdown {} read half", peer_name);
-                //             let _ = peer.shutdown(net::Shutdown::Read).map_err(|e| {
-                //                 debug!("      failed, {}", e);
-                //                 e
-                //             });
-                //             self.insert_shutflag(Shutflag::read(), !is_local_stream);
-                //         } else {
-                //             if self
-                //                 .get_shutflag(!is_local_stream)
-                //                 .contains(Shutflag::read())
-                //                 == false
-                //             {
-                //                 debug!("    shutdown {} read half", peer_name);
-                //                 let _ = peer.shutdown(net::Shutdown::Read).map_err(|e| {
-                //                     debug!("      failed, {}", e);
-                //                     e
-                //                 });
-                //             }
-                //             if self
-                //                 .get_shutflag(!is_local_stream)
-                //                 .contains(Shutflag::write())
-                //                 == false
-                //             {
-                //                 debug!("    shutdown {} write half", peer_name);
-                //                 let _ = peer.shutdown(net::Shutdown::Write).map_err(|e| {
-                //                     debug!("      failed, {}", e);
-                //                     e
-                //                 });
-                //             }
-                //             self.insert_shutflag(Shutflag::both(), !is_local_stream);
-                //         }
-                //     }
-                //
-                //     None => self.insert_shutflag(Shutflag::both(), !is_local_stream),
-                // }
             }
         }
     }
@@ -587,6 +499,12 @@ impl Connection {
         } else {
             self.remote_shut |= how;
         }
+    }
+    
+    fn contains_shutflag(&self, how: Shutflag, is_local_stream: bool) -> bool {
+        let shut = self.get_shutflag(is_local_stream);
+
+        shut.contains(how)
     }
 
     fn get_stream(&self, is_local_stream: bool) -> Option<&TcpStream> {
@@ -660,6 +578,14 @@ impl Connection {
             self.remote_readiness
         }
     }
+    
+    fn get_opts(&self, is_local_stream: bool) -> PollOpt {
+        if is_local_stream {
+            self.local_opts
+        } else {
+            self.remote_opts
+        }
+    }
 
     fn insert_readiness(
         &mut self,
@@ -670,7 +596,7 @@ impl Connection {
         let mut ready = self.get_readiness(is_local_stream);
         ready.insert(readiness);
         if ready != readiness {
-            return self.set_readiness(poll, ready, is_local_stream);
+            return self.set_readiness(poll, ready, self.get_opts(is_local_stream), is_local_stream);
         }
 
         Ok(())
@@ -685,7 +611,7 @@ impl Connection {
         let mut ready = self.get_readiness(is_local_stream);
         ready.remove(readiness);
         if ready != readiness {
-            return self.set_readiness(poll, ready, is_local_stream);
+            return self.set_readiness(poll, ready, self.get_opts(is_local_stream), is_local_stream);
         }
 
         Ok(())
@@ -695,15 +621,16 @@ impl Connection {
         &mut self,
         poll: &Poll,
         readiness: Ready,
+        opts: PollOpt,
         is_local_stream: bool,
     ) -> io::Result<()> {
-        if readiness == self.get_readiness(is_local_stream) {
+        if readiness == self.get_readiness(is_local_stream) && opts == self.get_opts(is_local_stream) {
             return Ok(());
         }
 
         let name = if is_local_stream { "local" } else { "remote" };
-        debug!("\t  change {} stream readiness {:?}", name, readiness);
-        self.reregister(poll, readiness, PollOpt::edge(), is_local_stream)
+        debug!("\t  set {} stream readiness {:?}, {:?}", name, readiness, opts);
+        self.reregister(poll, readiness, opts, is_local_stream)
     }
 
     pub fn ev_auth_method(&mut self, poll: &Poll) -> Result<(), (Shutflag, Shutflag)> {
@@ -767,7 +694,7 @@ impl Connection {
 
         &mut self.local_buf.consume(method_sel_len);
         if method != Method::NO_AUTH {
-            debug!("    {}", CliError::from(Method::NO_ACCEPT_METHOD));
+            debug!("    {}", NetError::from(Method::NO_ACCEPT_METHOD));
 
             return Err((Shutflag::both(), Shutflag::both()));
         }
@@ -1018,7 +945,7 @@ impl Connection {
 
                 error!(
                     "    not supported command {}",
-                    CliError::from(CMD_NOT_SUPPORTED)
+                    NetError::from(CMD_NOT_SUPPORTED)
                 );
 
                 return Err((Shutflag::both(), Shutflag::both()));
@@ -1091,7 +1018,8 @@ impl Connection {
             return Err((Shutflag::both(), Shutflag::both()));
         }
 
-        let _ = self.set_readiness(poll, Ready::readable(), REMOTE);
+        let _ = self.set_readiness(poll, Ready::readable(), PollOpt::edge(), REMOTE);
+        self.remote_buf.buf = Vec::with_capacity(BUF_ALLOC_SIZE);
         self.stage = Streaming;
 
         Ok(())
@@ -1103,19 +1031,26 @@ impl Connection {
             if token == self.get_token(LOCAL) {
                 debug!("streaming, local readable, @{}", *self);
 
-                let rls = (&mut self.remote_buf)
-                    .copy(self.local.as_mut().unwrap(), self.remote.as_mut().unwrap());
+                let rls = (&mut self.remote_buf).read_from(self.local.as_mut().unwrap());
                 match rls {
                     Ok(n) => {
-                        if self.remote_buf.payload_len() > 0 {
-                            let _ = self.insert_readiness(poll, Ready::writable(), REMOTE);
-                            if n == 0 {
-                                return Err((Shutflag::read(), Shutflag::empty()));
+                        if n == 0 {
+                            if self.remote_buf.payload_len() > 0 {
+                                let _ = self.set_readiness(poll, Ready::writable(), PollOpt::edge(), REMOTE);
+
+                                return Err((Shutflag::both(), Shutflag::read()));
+                            } else {
+                                return Err((Shutflag::both(), Shutflag::both()));
                             }
-                        } else if n == 0 {
-                            return Err((Shutflag::read(), Shutflag::write()));
+                        } else {
+                            let _ = self.insert_readiness(poll, Ready::writable(), REMOTE);
                         }
                     }
+
+                    Err(ExceedReadSize) => {
+                        let _ = self.set_readiness(poll, Ready::empty(), PollOpt::edge(), LOCAL);
+                        let _ = self.insert_readiness(poll, Ready::writable(), REMOTE);
+                    },
 
                     Err(e) => {
                         if e.wouldblock() == false {
@@ -1123,6 +1058,7 @@ impl Connection {
 
                             return Err((Shutflag::both(), Shutflag::both()));
                         }
+
                         if self.remote_buf.payload_len() > 0 {
                             let _ = self.insert_readiness(poll, Ready::writable(), REMOTE);
                         }
@@ -1131,24 +1067,30 @@ impl Connection {
             } else if token == self.get_token(REMOTE) {
                 debug!("streaming, remote readable, @{}", *self);
 
-                let rls = (&mut self.local_buf)
-                    .copy(self.remote.as_mut().unwrap(), self.local.as_mut().unwrap());
+                let rls = (&mut self.local_buf).read_from(self.remote.as_mut().unwrap());
                 match rls {
                     Ok(n) => {
-                        if self.local_buf.payload_len() > 0 {
-                            let _ = self.insert_readiness(poll, Ready::writable(), LOCAL);
+                        if n == 0 {
+                            if self.local_buf.payload_len() > 0 {
+                                let _ = self.set_readiness(poll, Ready::writable(), PollOpt::edge(), LOCAL);
 
-                            if n == 0 {
-                                return Err((Shutflag::empty(), Shutflag::read()));
+                                return Err((Shutflag::read(), Shutflag::both()));
+                            } else {
+                                return Err((Shutflag::both(), Shutflag::both()));
                             }
-                        } else if n == 0 {
-                            return Err((Shutflag::write(), Shutflag::read()));
+                        } else {
+                            let _ = self.insert_readiness(poll, Ready::writable(), LOCAL);
                         }
-                    }
+                    },
+
+                    Err(ExceedReadSize) => {
+                        let _ = self.set_readiness(poll, Ready::empty(), PollOpt::edge(), REMOTE);
+                        let _ = self.insert_readiness(poll, Ready::writable(), LOCAL);
+                    },
 
                     Err(e) => {
                         if e.wouldblock() == false {
-                            debug!("    copy remote to local with error {}", e);
+                            debug!("    read remote to local buf failed, {}", e);
 
                             return Err((Shutflag::both(), Shutflag::both()));
                         }
@@ -1173,28 +1115,29 @@ impl Connection {
                 match rls {
                     Ok(_) => {
                         if self.local_buf.payload_len() == 0 {
-                            debug!("  remove {:?}", Ready::writable());
-                            let _ = self.set_readiness(poll, Ready::readable(), LOCAL);
-                        }
-                    }
+                            let _ = self.remove_readiness(poll, Ready::writable(), LOCAL);
 
-                    Err(ExceedWriteSize) => {
-                        debug!("   re-register local writable(), level trigger");
-                        let _ = self.reregister(poll, Ready::writable(), PollOpt::level(), LOCAL);
+                            if self.contains_shutflag(Shutflag::read(), REMOTE) {
+                                debug!("  shut flag (write, empty)");
+                                return Err((Shutflag::write(), Shutflag::empty()));
+                            }
+
+                            if self.get_readiness(REMOTE) == Ready::empty() {
+                                let _ = self.set_readiness(poll, Ready::readable(), PollOpt::level(), REMOTE);
+                            } else {
+                                let _ = self.set_readiness(poll, Ready::readable(), PollOpt::edge(), REMOTE);
+                            }
+                        }
                     }
 
                     Err(e) => {
                         if e.wouldblock() == false {
                             debug!(
-                                "    local stream write failed, error: {}, discard all data, close write half.",
+                                "    local stream write failed, error: {}, close all.",
                                 e
                             );
 
-                            self.local_buf.buf = Vec::new();
-                            self.local_buf.pos = 0;
-                            let _ = self.set_readiness(poll, Ready::readable(), LOCAL);
-
-                            return Err((Shutflag::write(), Shutflag::read()));
+                            return Err((Shutflag::both(), Shutflag::both()));
                         }
                     }
                 }
@@ -1209,28 +1152,29 @@ impl Connection {
                 match rls {
                     Ok(_) => {
                         if self.remote_buf.payload_len() == 0 {
-                            debug!("  remove {:?}", Ready::writable());
-                            let _ = self.set_readiness(poll, Ready::readable(), REMOTE);
-                        }
-                    }
+                            let _ = self.remove_readiness(poll, Ready::writable(), REMOTE);
 
-                    Err(ExceedWriteSize) => {
-                        debug!("   re-register remote writable(), level trigger");
-                        let _ = self.reregister(poll, Ready::writable(), PollOpt::level(), REMOTE);
+                            if self.contains_shutflag(Shutflag::read(), LOCAL) {
+                                debug!("  shut flag (write, empty)");
+                                return Err((Shutflag::empty(), Shutflag::write()));
+                            }
+
+                            if self.get_readiness(LOCAL) == Ready::empty() {
+                                let _ = self.set_readiness(poll, Ready::readable(), PollOpt::level(), LOCAL);
+                            } else {
+                                let _ = self.set_readiness(poll, Ready::readable(), PollOpt::edge(), LOCAL);
+                            }
+                        }
                     }
 
                     Err(e) => {
                         if e.wouldblock() == false {
                             debug!(
-                                "    local stream write failed, error: {}, discard all data, close write half.",
+                                "    local stream write failed, error: {}, close all.",
                                 e
                             );
 
-                            self.remote_buf.buf = Vec::new();
-                            self.remote_buf.pos = 0;
-                            let _ = self.set_readiness(poll, Ready::readable(), REMOTE);
-
-                            return Err((Shutflag::read(), Shutflag::write()));
+                            return Err((Shutflag::both(), Shutflag::both()));
                         }
                     }
                 }
