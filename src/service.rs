@@ -62,7 +62,7 @@ impl Service {
             self.conns
                 .insert(new_rc_cell(Connection::new(false)).clone()),
         );
-        assert_eq!(listener_token, LISTENER);
+        debug_assert_eq!(listener_token, LISTENER);
 
         self.poll
             .register(&listener, LISTENER, Ready::readable(), PollOpt::edge())?;

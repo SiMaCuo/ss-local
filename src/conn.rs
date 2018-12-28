@@ -131,7 +131,7 @@ impl StreamBuf {
     }
 
     fn move_payload_to_head(&mut self) {
-        assert!(self.pos <= self.buf.len());
+        debug_assert!(self.pos <= self.buf.len());
 
         if self.pos == 0 || self.buf.len() == 0 {
             return;
@@ -960,7 +960,7 @@ impl Connection {
     ) -> Result<(), (Shutflag, Shutflag)> {
         debug!("triger remote connected event @{}", *self);
 
-        assert_eq!(self.get_token(REMOTE), ev.token());
+        debug_assert_eq!(self.get_token(REMOTE), ev.token());
 
         self.remote
             .as_ref()
