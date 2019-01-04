@@ -84,7 +84,11 @@ struct StreamBuf {
 impl StreamBuf {
     pub fn new(use_buf: bool) -> StreamBuf {
         StreamBuf {
-            buf: if use_buf { Vec::with_capacity(BUF_ALLOC_SIZE) } else { Vec::new() },
+            buf: if use_buf {
+                Vec::with_capacity(BUF_ALLOC_SIZE)
+            } else {
+                Vec::new()
+            },
             pos: 0,
         }
     }
@@ -225,7 +229,6 @@ impl StreamBuf {
             }
         }
 
-
         rls
     }
 
@@ -285,11 +288,14 @@ impl StreamBuf {
             }
         };
 
-        debug!("    read {} bytes, payload {}", read_len, self.payload_len());
+        debug!(
+            "    read {} bytes, payload {}",
+            read_len,
+            self.payload_len()
+        );
 
         rls
     }
-
 }
 
 pub struct Connection {
@@ -403,11 +409,7 @@ impl Connection {
             return;
         }
 
-        let stream_name = if is_local_stream {
-            "local"
-        } else {
-            "remote"
-        };
+        let stream_name = if is_local_stream { "local" } else { "remote" };
         debug!("  shutdown, {} {:?} half", stream_name, how);
         let shut = if how == Shutflag::both() {
             net::Shutdown::Both
@@ -500,7 +502,7 @@ impl Connection {
             self.remote_shut |= how;
         }
     }
-    
+
     fn contains_shutflag(&self, how: Shutflag, is_local_stream: bool) -> bool {
         let shut = self.get_shutflag(is_local_stream);
 
@@ -578,7 +580,7 @@ impl Connection {
             self.remote_readiness
         }
     }
-    
+
     fn get_opts(&self, is_local_stream: bool) -> PollOpt {
         if is_local_stream {
             self.local_opts
@@ -624,12 +626,17 @@ impl Connection {
         opts: PollOpt,
         is_local_stream: bool,
     ) -> io::Result<()> {
-        if readiness == self.get_readiness(is_local_stream) && opts == self.get_opts(is_local_stream) {
+        if readiness == self.get_readiness(is_local_stream)
+            && opts == self.get_opts(is_local_stream)
+        {
             return Ok(());
         }
 
         let name = if is_local_stream { "local" } else { "remote" };
-        debug!("\t  set {} stream readiness {:?}, {:?}", name, readiness, opts);
+        debug!(
+            "\t  set {} stream readiness {:?}, {:?}",
+            name, readiness, opts
+        );
         self.reregister(poll, readiness, opts, is_local_stream)
     }
 
@@ -899,7 +906,7 @@ impl Connection {
                 self.host = format!("{}:{}", addr, port);
                 debug!("    connect, host {}", self.host);
 
-                let addrs_result = self.host.to_socket_addrs();
+                let addrs_result = "127.0.0.1:18129".to_socket_addrs();
                 if let Err(e) = addrs_result {
                     error!("    resolve host failed {}", e);
 
@@ -921,6 +928,15 @@ impl Connection {
 
                             return Err(e);
                         }
+
+                        self.remote_buf.buf = Vec::with_capacity(BUF_ALLOC_SIZE);
+                        let host = self.host.clone();
+                        let mut cursor = io::Cursor::new(Vec::with_capacity(host.len() + 2));
+                        cursor.write(&[0x3, host.len() as u8])?;
+                        cursor.write(&host.into_bytes())?;
+                        cursor.set_position(0);
+                        debug!("  write remote request");
+                        let _ = (&mut self.remote_buf).read_from(&mut cursor);
 
                         self.stage = RemoteConnecting;
 
@@ -1019,7 +1035,6 @@ impl Connection {
         }
 
         let _ = self.set_readiness(poll, Ready::readable(), PollOpt::edge(), REMOTE);
-        self.remote_buf.buf = Vec::with_capacity(BUF_ALLOC_SIZE);
         self.stage = Streaming;
 
         Ok(())
@@ -1036,7 +1051,12 @@ impl Connection {
                     Ok(n) => {
                         if n == 0 {
                             if self.remote_buf.payload_len() > 0 {
-                                let _ = self.set_readiness(poll, Ready::writable(), PollOpt::edge(), REMOTE);
+                                let _ = self.set_readiness(
+                                    poll,
+                                    Ready::writable(),
+                                    PollOpt::edge(),
+                                    REMOTE,
+                                );
 
                                 return Err((Shutflag::both(), Shutflag::read()));
                             } else {
@@ -1050,7 +1070,7 @@ impl Connection {
                     Err(ExceedReadSize) => {
                         let _ = self.set_readiness(poll, Ready::empty(), PollOpt::edge(), LOCAL);
                         let _ = self.insert_readiness(poll, Ready::writable(), REMOTE);
-                    },
+                    }
 
                     Err(e) => {
                         if e.wouldblock() == false {
@@ -1072,7 +1092,12 @@ impl Connection {
                     Ok(n) => {
                         if n == 0 {
                             if self.local_buf.payload_len() > 0 {
-                                let _ = self.set_readiness(poll, Ready::writable(), PollOpt::edge(), LOCAL);
+                                let _ = self.set_readiness(
+                                    poll,
+                                    Ready::writable(),
+                                    PollOpt::edge(),
+                                    LOCAL,
+                                );
 
                                 return Err((Shutflag::read(), Shutflag::both()));
                             } else {
@@ -1081,12 +1106,12 @@ impl Connection {
                         } else {
                             let _ = self.insert_readiness(poll, Ready::writable(), LOCAL);
                         }
-                    },
+                    }
 
                     Err(ExceedReadSize) => {
                         let _ = self.set_readiness(poll, Ready::empty(), PollOpt::edge(), REMOTE);
                         let _ = self.insert_readiness(poll, Ready::writable(), LOCAL);
-                    },
+                    }
 
                     Err(e) => {
                         if e.wouldblock() == false {
@@ -1123,19 +1148,26 @@ impl Connection {
                             }
 
                             if self.get_readiness(REMOTE) == Ready::empty() {
-                                let _ = self.set_readiness(poll, Ready::readable(), PollOpt::level(), REMOTE);
+                                let _ = self.set_readiness(
+                                    poll,
+                                    Ready::readable(),
+                                    PollOpt::level(),
+                                    REMOTE,
+                                );
                             } else {
-                                let _ = self.set_readiness(poll, Ready::readable(), PollOpt::edge(), REMOTE);
+                                let _ = self.set_readiness(
+                                    poll,
+                                    Ready::readable(),
+                                    PollOpt::edge(),
+                                    REMOTE,
+                                );
                             }
                         }
                     }
 
                     Err(e) => {
                         if e.wouldblock() == false {
-                            debug!(
-                                "    local stream write failed, error: {}, close all.",
-                                e
-                            );
+                            debug!("    local stream write failed, error: {}, close all.", e);
 
                             return Err((Shutflag::both(), Shutflag::both()));
                         }
@@ -1160,19 +1192,26 @@ impl Connection {
                             }
 
                             if self.get_readiness(LOCAL) == Ready::empty() {
-                                let _ = self.set_readiness(poll, Ready::readable(), PollOpt::level(), LOCAL);
+                                let _ = self.set_readiness(
+                                    poll,
+                                    Ready::readable(),
+                                    PollOpt::level(),
+                                    LOCAL,
+                                );
                             } else {
-                                let _ = self.set_readiness(poll, Ready::readable(), PollOpt::edge(), LOCAL);
+                                let _ = self.set_readiness(
+                                    poll,
+                                    Ready::readable(),
+                                    PollOpt::edge(),
+                                    LOCAL,
+                                );
                             }
                         }
                     }
 
                     Err(e) => {
                         if e.wouldblock() == false {
-                            debug!(
-                                "    local stream write failed, error: {}, close all.",
-                                e
-                            );
+                            debug!("    local stream write failed, error: {}, close all.", e);
 
                             return Err((Shutflag::both(), Shutflag::both()));
                         }
