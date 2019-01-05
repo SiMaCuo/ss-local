@@ -4,7 +4,7 @@ use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
 use log::{debug, error, warn};
 use mio::{self, net::TcpStream, Poll, PollOpt, Ready, Token};
 use std::io::{self, Error, ErrorKind::*, Read, Write};
-use std::net::{self, IpAddr, ToSocketAddrs};
+use std::net::{self, ToSocketAddrs};
 use std::{cmp, fmt, mem, ptr, str};
 
 const BUF_ALLOC_SIZE: usize = 4096;
@@ -801,6 +801,9 @@ impl Connection {
             return Err((Shutflag::both(), Shutflag::both()));
         }
 
+        let mut ss_handshake: Vec<u8> = Vec::with_capacity(288);
+        ss_handshake.push(atpy);
+
         let addr: String;
         let port: u16;
         match atpy {
@@ -821,7 +824,7 @@ impl Connection {
                 .to_string();
                 port = unsafe { u16::from_be(mem::transmute::<[u8; 2], u16>([bs[8], bs[9]])) };
 
-                debug!("    ipv4 {}:{}", addr, port);
+                ss_handshake.extend_from_slice(&bs[CMD_HEAD_LEN..CMD_IPV4_LEN]);
 
                 (&mut self.local_buf).consume(CMD_IPV4_LEN).unwrap();
             }
@@ -860,7 +863,8 @@ impl Connection {
                     ]))
                 };
 
-                debug!("    domain {}:{}", addr, port);
+                ss_handshake.push(domain_len as u8);
+                ss_handshake.extend_from_slice(&bs[CMD_HEAD_LEN + 1..total_len]);
 
                 (&mut self.local_buf).consume(total_len).unwrap();
             }
@@ -885,17 +889,22 @@ impl Connection {
                     ]))
                 };
 
-                debug!("    ipv6 {}:{}", addr, port);
+                ss_handshake.extend_from_slice(&bs[CMD_HEAD_LEN..CMD_IPV6_LEN]);
 
                 self.local_buf.consume(CMD_IPV6_LEN).unwrap();
             }
 
             _ => {
-                let response = [SOCKS5_VERSION, ADDRTYPE_NOT_SUPPORTED, 0, V4];
                 error!("    not supported addrtype {}", atpy);
-                if let Err(e) = self.get_stream_mut(LOCAL).unwrap().write(&response) {
-                    warn!("    write ADDRTYPE_NOT_SUPPORTED failed: {}", e);
-                }
+                let _ = self
+                    .get_stream_mut(LOCAL)
+                    .unwrap()
+                    .write(&[SOCKS5_VERSION, ADDRTYPE_NOT_SUPPORTED, 0, V4])
+                    .map_err(|e| {
+                        warn!("    write ADDRTYPE_NOT_SUPPORTED failed: {}", e);
+
+                        e
+                    });
 
                 return Err((Shutflag::both(), Shutflag::both()));
             }
@@ -915,28 +924,22 @@ impl Connection {
 
                 TcpStream::connect(addrs_result.unwrap().next().as_ref().unwrap())
                     .and_then(|sock| {
-                        let rlt = self.register(
+                        self.register(
                             poll,
                             sock,
                             self.get_token(REMOTE),
                             Ready::writable(),
                             PollOpt::edge(),
                             REMOTE,
-                        );
-                        if let Err(e) = rlt {
+                        )
+                        .map_err(|e| {
                             error!("  register remote connection failed: {}", e);
-
-                            return Err(e);
-                        }
+                            e
+                        })?;
 
                         self.remote_buf.buf = Vec::with_capacity(BUF_ALLOC_SIZE);
-                        let host = self.host.clone();
-                        let mut cursor = io::Cursor::new(Vec::with_capacity(host.len() + 2));
-                        cursor.write(&[0x3, host.len() as u8])?;
-                        cursor.write(&host.into_bytes())?;
-                        cursor.set_position(0);
-                        debug!("  write remote request");
-                        let _ = (&mut self.remote_buf).read_from(&mut cursor);
+                        let _ =
+                            (&mut self.remote_buf).read_from(&mut io::Cursor::new(ss_handshake));
 
                         self.stage = RemoteConnecting;
 
@@ -953,10 +956,9 @@ impl Connection {
             }
 
             _ => {
-                let response = [SOCKS5_VERSION, CMD_NOT_SUPPORTED, 0, V4];
                 self.get_stream_mut(LOCAL)
                     .unwrap()
-                    .write(&response)
+                    .write(&[SOCKS5_VERSION, CMD_NOT_SUPPORTED, 0, V4])
                     .unwrap();
 
                 error!(
@@ -986,8 +988,12 @@ impl Connection {
                 if let Some(e) = option {
                     debug!("  connected FAILED {}", e);
 
-                    let response = [SOCKS5_VERSION, HOST_UNREACHABLE, 0, V4];
-                    let _ = self.get_stream(LOCAL).unwrap().write(&response);
+                    let _ = self.get_stream(LOCAL).unwrap().write(&[
+                        SOCKS5_VERSION,
+                        HOST_UNREACHABLE,
+                        0,
+                        V4,
+                    ]);
 
                     Err(e)
                 } else {
@@ -1003,36 +1009,23 @@ impl Connection {
                 (Shutflag::both(), Shutflag::both())
             })?;
 
-        let sock_addr = self.get_stream(REMOTE).unwrap().local_addr().unwrap();
-        let port = sock_addr.port();
-        let write_result;
-        match sock_addr.ip() {
-            IpAddr::V4(addr) => {
-                let mut response = [SOCKS5_VERSION, SUCCEEDED, 0, V4, 0, 0, 0, 0, 0, 0];
-                &mut response[4..8].copy_from_slice(&addr.octets());
+        self.get_stream_mut(LOCAL)
+            .unwrap()
+            .write(&[SOCKS5_VERSION, SUCCEEDED, 0, V4, 0, 0, 0, 0, 0, 0])
+            .map_err(|e| {
+                debug!("  write ipv4 type connect response failed {}, close all", e);
 
-                let bs: [u8; 2] = unsafe { mem::transmute::<u16, [u8; 2]>(port.to_be()) };
-                &mut response[8..].copy_from_slice(&bs);
-                write_result = self.get_stream_mut(LOCAL).unwrap().write(&response);
-            }
+                (Shutflag::both(), Shutflag::both())
+            })?;
 
-            IpAddr::V6(addr) => {
-                let mut response = [SOCKS5_VERSION; 22];
-                response[1] = SUCCEEDED;
-                response[2] = 0;
-                response[3] = V6;
-                &mut response[4..20].copy_from_slice(&addr.octets());
-                response[20] = (port.to_be() >> 1) as u8;
-                response[21] = (port.to_be() & 0xff) as u8;
-                write_result = self.get_stream_mut(LOCAL).unwrap().write(&response);
-            }
-        }
+        // send ss handshake
+        (&mut self.remote_buf)
+            .write_to(self.remote.as_mut().unwrap())
+            .map_err(|e| {
+                debug!("  write shadow socket handshake failed {}, close all", e);
 
-        if let Err(e) = write_result {
-            debug!("  write connect response failed {}, close all", e);
-
-            return Err((Shutflag::both(), Shutflag::both()));
-        }
+                (Shutflag::both(), Shutflag::both())
+            })?;
 
         let _ = self.set_readiness(poll, Ready::readable(), PollOpt::edge(), REMOTE);
         self.stage = Streaming;
