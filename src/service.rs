@@ -1,10 +1,11 @@
 use super::conn::{self, *};
+use super::config::Config;
 use super::rccell::*;
 use super::shut::*;
 use log::{debug, info};
 use mio::{net::TcpListener, net::TcpStream, Events, Poll, PollOpt, Ready, Token};
 use slab::*;
-use std::io::Result;
+use std::{io::Result, path::Path};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time;
 
@@ -13,6 +14,7 @@ const LISTENER: Token = Token(0);
 pub struct Service {
     conns: Slab<RcCell<Connection>>,
     poll: Poll,
+    config: Config,
 }
 
 impl Service {
@@ -20,6 +22,7 @@ impl Service {
         Service {
             conns: Slab::with_capacity(1024),
             poll: Poll::new().unwrap(),
+            config: Config::new(Path::new("./config.json")).unwrap(),
         }
     }
 
@@ -54,13 +57,13 @@ impl Service {
     }
 
     pub fn serve(&mut self) -> Result<()> {
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 18109);
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), self.config.local_port);
         let listener = TcpListener::bind(&addr).unwrap();
         info!("Listening on: {}", addr);
 
         let listener_token = Token(
             self.conns
-                .insert(new_rc_cell(Connection::new(false)).clone()),
+                .insert(new_rc_cell(Connection::new(false, self.config.clone())).clone()),
         );
         debug_assert_eq!(listener_token, LISTENER);
 
@@ -119,7 +122,7 @@ impl Service {
     }
 
     pub fn create_local_connection(&mut self, handle: TcpStream) -> Result<()> {
-        let cnt = new_rc_cell(Connection::new(true));
+        let cnt = new_rc_cell(Connection::new(true, self.config.clone()));
         let local_token = Token(self.conns.insert(cnt.clone()));
         let rls = cnt.borrow_mut().register(
             &mut self.poll,

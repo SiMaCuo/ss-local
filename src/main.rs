@@ -6,6 +6,7 @@ mod rccell;
 mod service;
 mod shut;
 mod socks5;
+mod config;
 
 fn main() {
     log4rs::init_file("log4rs.yml", Default::default()).unwrap();

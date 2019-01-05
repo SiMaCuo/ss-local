@@ -1,0 +1,9 @@
+{        
+    "local_port": 1234,
+    "server": "0.0.0.0",
+    "server_port": 5678,
+    "password": "90",
+    "method": "aes-256-gcm"
+}
+
+        

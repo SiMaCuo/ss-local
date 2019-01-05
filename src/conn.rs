@@ -1,6 +1,7 @@
 use super::err::{NetError::*, *};
 use super::shut::*;
 use super::socks5::{AddrType::*, Rep::*, Stage::*, *};
+use super::config::Config;
 use log::{debug, error, warn};
 use mio::{self, net::TcpStream, Poll, PollOpt, Ready, Token};
 use std::io::{self, Error, ErrorKind::*, Read, Write};
@@ -313,10 +314,11 @@ pub struct Connection {
     remote_opts: PollOpt,
     stage: Stage,
     host: String,
+    config: Config,
 }
 
 impl Connection {
-    pub fn new(use_buf: bool) -> Self {
+    pub fn new(use_buf: bool, config: Config) -> Self {
         Connection {
             local: None,
             local_token: Token::from(std::usize::MAX),
@@ -332,6 +334,7 @@ impl Connection {
             remote_opts: PollOpt::empty(),
             stage: LocalConnected,
             host: "*".to_string(),
+            config,
         }
     }
 
@@ -915,7 +918,7 @@ impl Connection {
                 self.host = format!("{}:{}", addr, port);
                 debug!("    connect, host {}", self.host);
 
-                let addrs_result = "127.0.0.1:18129".to_socket_addrs();
+                let addrs_result = format!("{}:{}", self.config.server_ip, self.config.server_port).to_socket_addrs();
                 if let Err(e) = addrs_result {
                     error!("    resolve host failed {}", e);
 
