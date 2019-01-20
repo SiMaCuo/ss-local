@@ -7,11 +7,11 @@ use openssl::{
 use rand;
 use ring::{
     aead::AES_256_GCM, 
-    digest::SHA1, hkdf, 
+    digest::SHA1, 
+    hkdf, 
     hmac::SigningKey
 };
 use sodiumoxide::crypto::aead::chacha20poly1035_ietf;
-use std::mem;
 
 const CIPHER_AES_256_GCM = "aes-256-gcm";
 const CIPHER_CHACHA20_IETF_POLY1305 = "chacha20-ietf-poly1305";
