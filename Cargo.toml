@@ -21,6 +21,7 @@ digest = "0.8"
 bytes = "0.4"
 sodiumoxide = "0.2"
 romio = "0.3.0-alpha.1"
+byteorder = "1.3"
 
 [dependencies.futures]
 version = "0.3.0-alpha.12"

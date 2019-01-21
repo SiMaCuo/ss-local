@@ -1,9 +1,9 @@
 use bytes::{Buf, Bytes, BytesMut};
-use future::AsyncRead;
+use futures::io::{AsyncReadExt, AsyncWriteExt};
 use std::{
     fmt::{self, Debug, Formatter},
     future::Future,
-    io::{self, Cursor},
+    io::{self, Cursor, Error, ErrorKind},
     net::{self, Ipv4Addr, Ipv6Addr},
     pin::Pin,
     task::{LocalWaker, Poll},
@@ -119,12 +119,12 @@ impl AddrType {
         }
     }
 
-    fn from_u8(code: u8) -> Option<AddrType> {
+    fn from_u8(code: u8) -> AddrType {
         match code {
-            S5Code::SOCKS5_ADDRTYPE_V4 => Some(AddrType::V4),
-            S5Code::SOCKS5_ADDRTYPE_DOMAIN => Some(AddrType::Domain),
-            S5Code::SOCKS5_ADDRTYPE_V6 => Some(AddrType::V6),
-            _ => None,
+            S5Code::SOCKS5_ADDRTYPE_V4 => AddrType::V4,
+            S5Code::SOCKS5_ADDRTYPE_DOMAIN => AddrType::Domain,
+            S5Code::SOCKS5_ADDRTYPE_V6 => AddrType::V6,
+            _ => unreachable!(),
         }
     }
 }
@@ -196,18 +196,104 @@ impl Debug for Address {
     }
 }
 
+#[derive(Debug)]
+enum ReadAddressState {
+    ReadAddrType,
+    ReadIpV4,
+    ReadIpV6,
+    ReadDomain,
+}
+
 pub struct ReadAddress<R>
 where
-    R: AsyncRead,
+    R: AsyncReadExt,
 {
+    state: ReadAddressState,
     reader: Option<R>,
     buf: Option<BytesMut>,
-    read_size: usize,
+    read_len: usize,
+}
+
+impl<R> ReadAddress<R>
+where
+    R: AsyncReadExt,
+{
+    fn new(r: R) -> ReadAddress<R> {
+        ReadAddress {
+            state: ReadAddressState::ReadAddrType,
+            reader: Some(r),
+            buf: None,
+            read_len: 0,
+        }
+    }
+
+    fn read_addr_type(&mut self) -> io::Result<AddrType> {
+        let atyp = self.reader.as_mut().unwrap().read_u8()?;
+        match AddrType::from_u8(atyp) {
+            AddrType::V4 => {
+                self.state = ReadAddressState::ReadIpV4;
+                self.alloc_buf(4 + 2);
+            }
+            AddrType::V6 => {
+                self.state = ReadAddressState::ReadIpV6;
+                self.alloc_buf(16 + 2);
+            }
+            AddrType::Domain => {
+                let dm_len = self.reader.as_mut().unwrap().read_u8()?;
+                self.state = ReadAddressState::ReadDomain;
+                self.alloc_buf(dm_len + 2);
+            }
+        }
+
+        Ok(AddrType::from_u8(atyp))
+    }
+
+    fn alloc_buf(&mut self, size: usize) {
+        let mut buf = BytesMut::with_capacity(size);
+        unsafe {
+            buf.set_len(size);
+        }
+
+        self.buf = Some(buf);
+    }
+
+    fn read_data(&mut self) -> Poll<io::Result<()>> {
+        debug_assert!(self.buf.is_some());
+
+        let buf = self.buf.as_mut().unwrap();
+        match self
+            .reader
+            .as_mut()
+            .unwrap()
+            .read(&mut buf[self.read_len..])
+        {
+            Ok(0) => {
+                return Poll::Ready(Err(Error::from(ErrorKind::UnexpectedEof)));
+            }
+
+            Ok(n) => {
+                self.read_len += n;
+                if self.read_len < buf.len() {
+                    return Poll::Pending;
+                }
+            }
+
+            Err(e) => {
+                if e.kind() == ErrorKind::UnexpectedEof || e.kind() == ErrorKind::Interrupted {
+                    return Poll::Pending;
+                } else {
+                    return Poll::Ready(Err(e.into()));
+                }
+            }
+        }
+
+        Poll::Ready(Ok(()))
+    }
 }
 
 impl<R> Future for ReadAddress<R>
 where
-    R: AsyncRead,
+    R: AsyncReadExt,
 {
     type Output = io::Result<(R, Address)>;
 
