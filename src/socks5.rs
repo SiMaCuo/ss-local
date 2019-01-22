@@ -1,10 +1,13 @@
 use bytes::{Buf, Bytes, BytesMut};
-use futures::io::{AsyncReadExt, AsyncWriteExt};
+use futures::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    try_ready,
+};
 use std::{
     fmt::{self, Debug, Formatter},
     future::Future,
     io::{self, Cursor, Error, ErrorKind},
-    net::{self, Ipv4Addr, Ipv6Addr},
+    net::{self, IpAddr, Ipv4Addr, Ipv6Addr},
     pin::Pin,
     task::{LocalWaker, Poll},
 };
@@ -13,6 +16,7 @@ pub const CMD_HEAD_LEN: usize = 4;
 pub const CMD_IPV4_LEN: usize = CMD_HEAD_LEN + 4 + 2;
 pub const CMD_IPV6_LEN: usize = CMD_HEAD_LEN + 16 + 2;
 pub const METHOD_SELECT_HEAD_LEN: usize = 2;
+const SS_MAX_ADDRESSING_LEN: usize = 1 + 1 + 255 + 2;
 
 pub const SOCKS5_VERSION: u8 = 5;
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -143,30 +147,32 @@ enum Reply {
 }
 
 impl Reply {
+    #[cfg_attr(rustfmt, rustfmt_skip)]
     fn as_u8(self) -> u8 {
         match self {
-            Reply::Succeeded => S5Code::SOCKS5_REPLY_SUCCEEDED,
-            Reply::GeneralFailure => S5Code::SOCKS5_REPLY_GENERAL_FAILURE,
-            Reply::ConnectDisallowed => S5Code::SOCKS5_REPLY_CONNECT_DISALLOWED,
-            Reply::NetworkUnreachable => S5Code::SOCKS5_REPLY_NETWORK_UNREACHABLE,
-            Reply::HostUnreachable => S5Code::SOCKS5_REPLY_HOST_UNREACHABLE,
-            Reply::ConnectRefused => S5Code::SOCKS5_REPLY_CONNECT_REFUSED,
-            Reply::TtlExpired => S5Code::SOCKS5_REPLY_TTL_EXPIRED,
-            Reply::CommandNotSupported => S5Code::SOCKS5_REPLY_COMMAND_NOT_SUPPORTED,
-            Reply::AddrtypeNotSupported => S5Code::SOCKS5_REPLY_ADDRTYPE_NOT_SUPPORTED,
+            Reply::Succeeded                => S5Code::SOCKS5_REPLY_SUCCEEDED,
+            Reply::GeneralFailure           => S5Code::SOCKS5_REPLY_GENERAL_FAILURE,
+            Reply::ConnectDisallowed        => S5Code::SOCKS5_REPLY_CONNECT_DISALLOWED,
+            Reply::NetworkUnreachable       => S5Code::SOCKS5_REPLY_NETWORK_UNREACHABLE,
+            Reply::HostUnreachable          => S5Code::SOCKS5_REPLY_HOST_UNREACHABLE,
+            Reply::ConnectRefused           => S5Code::SOCKS5_REPLY_CONNECT_REFUSED,
+            Reply::TtlExpired               => S5Code::SOCKS5_REPLY_TTL_EXPIRED,
+            Reply::CommandNotSupported      => S5Code::SOCKS5_REPLY_COMMAND_NOT_SUPPORTED,
+            Reply::AddrtypeNotSupported     => S5Code::SOCKS5_REPLY_ADDRTYPE_NOT_SUPPORTED,
         }
     }
 
+    #[cfg_attr(rustfmt, rustfmt_skip)]
     fn from_u8(code: u8) -> Option<Reply> {
         match code {
-            S5Code::SOCKS5_REPLY_SUCCEEDED => Some(Reply::Succeeded),
-            S5Code::SOCKS5_REPLY_GENERAL_FAILURE => Some(Reply::GeneralFailure),
-            S5Code::SOCKS5_REPLY_CONNECT_DISALLOWED => Some(Reply::ConnectDisallowed),
-            S5Code::SOCKS5_REPLY_NETWORK_UNREACHABLE => Some(Reply::NetworkUnreachable),
-            S5Code::SOCKS5_REPLY_HOST_UNREACHABLE => Some(Reply::HostUnreachable),
-            S5Code::SOCKS5_REPLY_CONNECT_REFUSED => Some(Reply::ConnectRefused),
-            S5Code::SOCKS5_REPLY_TTL_EXPIRED => Some(Reply::TtlExpired),
-            S5Code::SOCKS5_REPLY_COMMAND_NOT_SUPPORTED => Some(Reply::CommandNotSupported),
+            S5Code::SOCKS5_REPLY_SUCCEEDED              => Some(Reply::Succeeded),
+            S5Code::SOCKS5_REPLY_GENERAL_FAILURE        => Some(Reply::GeneralFailure),
+            S5Code::SOCKS5_REPLY_CONNECT_DISALLOWED     => Some(Reply::ConnectDisallowed),
+            S5Code::SOCKS5_REPLY_NETWORK_UNREACHABLE    => Some(Reply::NetworkUnreachable),
+            S5Code::SOCKS5_REPLY_HOST_UNREACHABLE       => Some(Reply::HostUnreachable),
+            S5Code::SOCKS5_REPLY_CONNECT_REFUSED        => Some(Reply::ConnectRefused),
+            S5Code::SOCKS5_REPLY_TTL_EXPIRED            => Some(Reply::TtlExpired),
+            S5Code::SOCKS5_REPLY_COMMAND_NOT_SUPPORTED  => Some(Reply::CommandNotSupported),
             S5Code::SOCKS5_REPLY_ADDRTYPE_NOT_SUPPORTED => Some(Reply::AddrtypeNotSupported),
             _ => None,
         }
@@ -196,21 +202,12 @@ impl Debug for Address {
     }
 }
 
-#[derive(Debug)]
-enum ReadAddressState {
-    ReadAddrType,
-    ReadIpV4,
-    ReadIpV6,
-    ReadDomain,
-}
-
 pub struct ReadAddress<R>
 where
     R: AsyncReadExt,
 {
-    state: ReadAddressState,
     reader: Option<R>,
-    buf: Option<BytesMut>,
+    buf: BytesMut,
     read_len: usize,
 }
 
@@ -218,86 +215,76 @@ impl<R> ReadAddress<R>
 where
     R: AsyncReadExt,
 {
-    fn new(r: R) -> ReadAddress<R> {
+    pub fn new(r: R) -> ReadAddress<R> {
+        let buf = BytesMut::with_capacity(SS_MAX_ADDRESSING_LEN);
+        unsafe {
+            buf.set_len(SS_MAX_ADDRESSING_LEN);
+        }
         ReadAddress {
-            state: ReadAddressState::ReadAddrType,
             reader: Some(r),
-            buf: None,
+            buf,
             read_len: 0,
         }
     }
 
-    fn read_addr_type(&mut self) -> io::Result<AddrType> {
-        let atyp = self.reader.as_mut().unwrap().read_u8()?;
-        match AddrType::from_u8(atyp) {
-            AddrType::V4 => {
-                self.state = ReadAddressState::ReadIpV4;
-                self.alloc_buf(4 + 2);
-            }
-            AddrType::V6 => {
-                self.state = ReadAddressState::ReadIpV6;
-                self.alloc_buf(16 + 2);
-            }
-            AddrType::Domain => {
-                let dm_len = self.reader.as_mut().unwrap().read_u8()?;
-                self.state = ReadAddressState::ReadDomain;
-                self.alloc_buf(dm_len + 2);
-            }
-        }
-
-        Ok(AddrType::from_u8(atyp))
-    }
-
-    fn alloc_buf(&mut self, size: usize) {
-        let mut buf = BytesMut::with_capacity(size);
-        unsafe {
-            buf.set_len(size);
-        }
-
-        self.buf = Some(buf);
-    }
-
-    fn read_data(&mut self) -> Poll<io::Result<()>> {
-        debug_assert!(self.buf.is_some());
-
-        let buf = self.buf.as_mut().unwrap();
-        match self
+    pub async fn read_addr(&mut self) -> io::Result<Address> {
+        let read_len = await!(self
             .reader
             .as_mut()
             .unwrap()
-            .read(&mut buf[self.read_len..])
-        {
-            Ok(0) => {
-                return Poll::Ready(Err(Error::from(ErrorKind::UnexpectedEof)));
-            }
-
-            Ok(n) => {
-                self.read_len += n;
-                if self.read_len < buf.len() {
-                    return Poll::Pending;
-                }
-            }
-
-            Err(e) => {
-                if e.kind() == ErrorKind::UnexpectedEof || e.kind() == ErrorKind::Interrupted {
-                    return Poll::Pending;
-                } else {
-                    return Poll::Ready(Err(e.into()));
-                }
-            }
+            .read(&mut self.buf[self.read_len..]))?;
+        if read_len == 0 {
+            return Err(Error::from(ErrorKind::UnexpectedEof));
         }
+        self.read_len += read_len;
 
-        Poll::Ready(Ok(()))
+        let mut stream = Cursor::new(&self.buf[..self.read_len]);
+        let atyp = AddrType::from_u8(stream.get_u8());
+        let address = match atyp {
+            AddrType::V4 => {
+                debug_assert_eq!(self.read_len, 1 + 4 + 2);
+
+                let addr_v4 = IpAddr::V4(Ipv4Addr::new(
+                    stream.get_u8(),
+                    stream.get_u8(),
+                    stream.get_u8(),
+                    stream.get_u8(),
+                ));
+                let port = stream.get_u16_be();
+
+                Address::SocketAddr(net::SocketAddr::new(addr_v4, port))
+            }
+
+            AddrType::V6 => {
+                debug_assert_eq!(self.read_len, 1 + 16 + 2);
+
+                let addr_v6 = IpAddr::V6(Ipv6Addr::new(
+                    stream.get_u16_be(),
+                    stream.get_u16_be(),
+                    stream.get_u16_be(),
+                    stream.get_u16_be(),
+                    stream.get_u16_be(),
+                    stream.get_u16_be(),
+                    stream.get_u16_be(),
+                    stream.get_u16_be(),
+                ));
+                let port = stream.get_u16_be();
+
+                Address::SocketAddr(net::SocketAddr::new(addr_v6, port))
+            }
+            AddrType::Domain => {
+                debug_assert!(self.read_len > 2);
+                let dmlen = stream.get_u8() as usize;
+                debug_assert!(self.read_len == 1 + 1 + dmlen + 2);
+
+                let dmname = String::from_utf8_lossy(&self.buf[2..2 + dmlen]).to_string();
+                stream.set_position((2 + dmlen) as u64);
+                let port = stream.get_u16_be();
+                Address::DomainName(dmname, port)
+            }
+        };
+
+        Ok(address)
     }
 }
 
-impl<R> Future for ReadAddress<R>
-where
-    R: AsyncReadExt,
-{
-    type Output = io::Result<(R, Address)>;
-
-    fn poll(self: Pin<&mut Self>, lw: &LocalWaker) -> Poll<Self::Output> {
-        debug_assert!(self.reader.is_some());
-    }
-}
