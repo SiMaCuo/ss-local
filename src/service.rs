@@ -1,14 +1,16 @@
 // use super::conn::{self, *};
-use super::config::Config;
-use super::socks5::*;
+use super::{config::Config, socks5::*};
 // use super::rccell::*;
 // use super::shut::*;
+use futures::prelude::*;
 use log::{debug, info};
 use romio::tcp::{TcpListener, TcpStream};
-use futures::prelude::*;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time;
-use std::{io::Result, path::Path};
+use std::{
+    io::Result,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::Path,
+    time,
+};
 
 // const LISTENER: Token = Token(0);
 
@@ -25,7 +27,7 @@ impl Service {
 
     pub async fn serve(&mut self) -> Result<()> {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), self.config.local_port);
-        let listener = TcpListener::bind(&addr).unwrap();
+        let listener = TcpListener::bind(&addr).unwrap_or_else(|e| panic!("listen on {} failed {}", addr, e));
         let mut incoming = listener.incoming();
         info!("Listening on: {}", addr);
         while let Some(Ok(stream)) = await!(incoming.next()) {

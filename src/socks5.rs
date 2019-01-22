@@ -179,18 +179,20 @@ impl Reply {
     }
 }
 
-fn get_address_len(atyp: &Address) -> usize {
-    match atyp {
-        Address::SocketAddr(net::SocketAddr::V4(..)) => 1 + 4 + 2,
-        Address::SocketAddr(net::SocketAddr::V6(..)) => 1 + 16 + 2,
-        Address::DomainName(ref dmname, _) => 1 + 1 + dmname.len() + 2,
-    }
-}
-
 #[derive(Clone)]
 pub enum Address {
     SocketAddr(net::SocketAddr),
     DomainName(String, u16),
+}
+
+impl Address {
+    pub fn len(&self) -> usize {
+        match self {
+            Address::SocketAddr(net::SocketAddr::V4(..)) => 1 + 4 + 2,
+            Address::SocketAddr(net::SocketAddr::V6(..)) => 1 + 16 + 2,
+            Address::DomainName(ref dmname, _) => 1 + 1 + dmname.len() + 2,
+        }
+    }
 }
 
 impl Debug for Address {
@@ -216,7 +218,7 @@ where
     R: AsyncReadExt,
 {
     pub fn new(r: R) -> ReadAddress<R> {
-        let buf = BytesMut::with_capacity(SS_MAX_ADDRESSING_LEN);
+        let mut buf = BytesMut::with_capacity(SS_MAX_ADDRESSING_LEN);
         unsafe {
             buf.set_len(SS_MAX_ADDRESSING_LEN);
         }
@@ -228,11 +230,7 @@ where
     }
 
     pub async fn read_addr(&mut self) -> io::Result<Address> {
-        let read_len = await!(self
-            .reader
-            .as_mut()
-            .unwrap()
-            .read(&mut self.buf[self.read_len..]))?;
+        let read_len = await!(self.reader.as_mut().unwrap().read(&mut self.buf[self.read_len..]))?;
         if read_len == 0 {
             return Err(Error::from(ErrorKind::UnexpectedEof));
         }
@@ -275,7 +273,7 @@ where
             AddrType::Domain => {
                 debug_assert!(self.read_len > 2);
                 let dmlen = stream.get_u8() as usize;
-                debug_assert!(self.read_len == 1 + 1 + dmlen + 2);
+                debug_assert!(self.read_len == 2 + dmlen + 2);
 
                 let dmname = String::from_utf8_lossy(&self.buf[2..2 + dmlen]).to_string();
                 stream.set_position((2 + dmlen) as u64);
@@ -287,4 +285,3 @@ where
         Ok(address)
     }
 }
-
