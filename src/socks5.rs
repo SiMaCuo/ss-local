@@ -20,7 +20,7 @@ const SS_MAX_ADDRESSING_LEN: usize = 1 + 1 + 255 + 2;
 
 pub const SOCKS5_VERSION: u8 = 5;
 #[cfg_attr(rustfmt, rustfmt_skip)]
-mod S5Code {
+mod s5code {
     pub const SOCKS5_METHOD_NO_AUTH: u8                 = 0x0;
     pub const SOCKS5_METHOD_GSSAPI: u8                  = 0x1;
     pub const SOCKS5_METHOD_NAME_PASSWORD: u8           = 0x3;
@@ -63,19 +63,19 @@ enum Method {
 impl Method {
     fn as_u8(self) -> u8 {
         match self {
-            Method::NoAuth => S5Code::SOCKS5_METHOD_NO_AUTH,
-            Method::GssApi => S5Code::SOCKS5_METHOD_GSSAPI,
-            Method::NamePassword => S5Code::SOCKS5_METHOD_NAME_PASSWORD,
-            Method::NoAcceptMethod => S5Code::SOCKS5_METHOD_NO_ACCEPT,
+            Method::NoAuth => s5code::SOCKS5_METHOD_NO_AUTH,
+            Method::GssApi => s5code::SOCKS5_METHOD_GSSAPI,
+            Method::NamePassword => s5code::SOCKS5_METHOD_NAME_PASSWORD,
+            Method::NoAcceptMethod => s5code::SOCKS5_METHOD_NO_ACCEPT,
         }
     }
 
     fn from_u8(code: u8) -> Option<Method> {
         match code {
-            S5Code::SOCKS5_METHOD_NO_AUTH => Some(Method::NoAuth),
-            S5Code::SOCKS5_METHOD_GSSAPI => Some(Method::GssApi),
-            S5Code::SOCKS5_METHOD_NAME_PASSWORD => Some(Method::NamePassword),
-            S5Code::SOCKS5_METHOD_NO_ACCEPT => Some(Method::NoAcceptMethod),
+            s5code::SOCKS5_METHOD_NO_AUTH => Some(Method::NoAuth),
+            s5code::SOCKS5_METHOD_GSSAPI => Some(Method::GssApi),
+            s5code::SOCKS5_METHOD_NAME_PASSWORD => Some(Method::NamePassword),
+            s5code::SOCKS5_METHOD_NO_ACCEPT => Some(Method::NoAcceptMethod),
             _ => None,
         }
     }
@@ -91,17 +91,17 @@ enum Command {
 impl Command {
     fn as_u8(self) -> u8 {
         match self {
-            Command::Connect => S5Code::SOCKS5_COMMAND_CONNECT,
-            Command::Bind => S5Code::SOCKS5_COMMAND_BIND,
-            Command::UdpAssociate => S5Code::SOCKS5_COMMAND_UDP_ASSOCIATE,
+            Command::Connect => s5code::SOCKS5_COMMAND_CONNECT,
+            Command::Bind => s5code::SOCKS5_COMMAND_BIND,
+            Command::UdpAssociate => s5code::SOCKS5_COMMAND_UDP_ASSOCIATE,
         }
     }
 
     fn from_u8(code: u8) -> Option<Command> {
         match code {
-            S5Code::SOCKS5_COMMAND_CONNECT => Some(Command::Connect),
-            S5Code::SOCKS5_COMMAND_BIND => Some(Command::Bind),
-            S5Code::SOCKS5_COMMAND_UDP_ASSOCIATE => Some(Command::UdpAssociate),
+            s5code::SOCKS5_COMMAND_CONNECT => Some(Command::Connect),
+            s5code::SOCKS5_COMMAND_BIND => Some(Command::Bind),
+            s5code::SOCKS5_COMMAND_UDP_ASSOCIATE => Some(Command::UdpAssociate),
             _ => None,
         }
     }
@@ -117,17 +117,17 @@ enum AddrType {
 impl AddrType {
     fn as_u8(self) -> u8 {
         match self {
-            AddrType::V4 => S5Code::SOCKS5_ADDRTYPE_V4,
-            AddrType::Domain => S5Code::SOCKS5_ADDRTYPE_DOMAIN,
-            AddrType::V6 => S5Code::SOCKS5_ADDRTYPE_V6,
+            AddrType::V4 => s5code::SOCKS5_ADDRTYPE_V4,
+            AddrType::Domain => s5code::SOCKS5_ADDRTYPE_DOMAIN,
+            AddrType::V6 => s5code::SOCKS5_ADDRTYPE_V6,
         }
     }
 
     fn from_u8(code: u8) -> AddrType {
         match code {
-            S5Code::SOCKS5_ADDRTYPE_V4 => AddrType::V4,
-            S5Code::SOCKS5_ADDRTYPE_DOMAIN => AddrType::Domain,
-            S5Code::SOCKS5_ADDRTYPE_V6 => AddrType::V6,
+            s5code::SOCKS5_ADDRTYPE_V4 => AddrType::V4,
+            s5code::SOCKS5_ADDRTYPE_DOMAIN => AddrType::Domain,
+            s5code::SOCKS5_ADDRTYPE_V6 => AddrType::V6,
             _ => unreachable!(),
         }
     }
@@ -150,30 +150,30 @@ impl Reply {
     #[cfg_attr(rustfmt, rustfmt_skip)]
     fn as_u8(self) -> u8 {
         match self {
-            Reply::Succeeded                => S5Code::SOCKS5_REPLY_SUCCEEDED,
-            Reply::GeneralFailure           => S5Code::SOCKS5_REPLY_GENERAL_FAILURE,
-            Reply::ConnectDisallowed        => S5Code::SOCKS5_REPLY_CONNECT_DISALLOWED,
-            Reply::NetworkUnreachable       => S5Code::SOCKS5_REPLY_NETWORK_UNREACHABLE,
-            Reply::HostUnreachable          => S5Code::SOCKS5_REPLY_HOST_UNREACHABLE,
-            Reply::ConnectRefused           => S5Code::SOCKS5_REPLY_CONNECT_REFUSED,
-            Reply::TtlExpired               => S5Code::SOCKS5_REPLY_TTL_EXPIRED,
-            Reply::CommandNotSupported      => S5Code::SOCKS5_REPLY_COMMAND_NOT_SUPPORTED,
-            Reply::AddrtypeNotSupported     => S5Code::SOCKS5_REPLY_ADDRTYPE_NOT_SUPPORTED,
+            Reply::Succeeded                => s5code::SOCKS5_REPLY_SUCCEEDED,
+            Reply::GeneralFailure           => s5code::SOCKS5_REPLY_GENERAL_FAILURE,
+            Reply::ConnectDisallowed        => s5code::SOCKS5_REPLY_CONNECT_DISALLOWED,
+            Reply::NetworkUnreachable       => s5code::SOCKS5_REPLY_NETWORK_UNREACHABLE,
+            Reply::HostUnreachable          => s5code::SOCKS5_REPLY_HOST_UNREACHABLE,
+            Reply::ConnectRefused           => s5code::SOCKS5_REPLY_CONNECT_REFUSED,
+            Reply::TtlExpired               => s5code::SOCKS5_REPLY_TTL_EXPIRED,
+            Reply::CommandNotSupported      => s5code::SOCKS5_REPLY_COMMAND_NOT_SUPPORTED,
+            Reply::AddrtypeNotSupported     => s5code::SOCKS5_REPLY_ADDRTYPE_NOT_SUPPORTED,
         }
     }
 
     #[cfg_attr(rustfmt, rustfmt_skip)]
     fn from_u8(code: u8) -> Option<Reply> {
         match code {
-            S5Code::SOCKS5_REPLY_SUCCEEDED              => Some(Reply::Succeeded),
-            S5Code::SOCKS5_REPLY_GENERAL_FAILURE        => Some(Reply::GeneralFailure),
-            S5Code::SOCKS5_REPLY_CONNECT_DISALLOWED     => Some(Reply::ConnectDisallowed),
-            S5Code::SOCKS5_REPLY_NETWORK_UNREACHABLE    => Some(Reply::NetworkUnreachable),
-            S5Code::SOCKS5_REPLY_HOST_UNREACHABLE       => Some(Reply::HostUnreachable),
-            S5Code::SOCKS5_REPLY_CONNECT_REFUSED        => Some(Reply::ConnectRefused),
-            S5Code::SOCKS5_REPLY_TTL_EXPIRED            => Some(Reply::TtlExpired),
-            S5Code::SOCKS5_REPLY_COMMAND_NOT_SUPPORTED  => Some(Reply::CommandNotSupported),
-            S5Code::SOCKS5_REPLY_ADDRTYPE_NOT_SUPPORTED => Some(Reply::AddrtypeNotSupported),
+            s5code::SOCKS5_REPLY_SUCCEEDED              => Some(Reply::Succeeded),
+            s5code::SOCKS5_REPLY_GENERAL_FAILURE        => Some(Reply::GeneralFailure),
+            s5code::SOCKS5_REPLY_CONNECT_DISALLOWED     => Some(Reply::ConnectDisallowed),
+            s5code::SOCKS5_REPLY_NETWORK_UNREACHABLE    => Some(Reply::NetworkUnreachable),
+            s5code::SOCKS5_REPLY_HOST_UNREACHABLE       => Some(Reply::HostUnreachable),
+            s5code::SOCKS5_REPLY_CONNECT_REFUSED        => Some(Reply::ConnectRefused),
+            s5code::SOCKS5_REPLY_TTL_EXPIRED            => Some(Reply::TtlExpired),
+            s5code::SOCKS5_REPLY_COMMAND_NOT_SUPPORTED  => Some(Reply::CommandNotSupported),
+            s5code::SOCKS5_REPLY_ADDRTYPE_NOT_SUPPORTED => Some(Reply::AddrtypeNotSupported),
             _ => None,
         }
     }
