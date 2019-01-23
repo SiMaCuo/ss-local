@@ -2,7 +2,7 @@
 use super::{config::SsConfig, socks5::*};
 // use super::rccell::*;
 // use super::shut::*;
-use futures::{executor::ThreadPool, future::FutureObj, prelude::*, task::Spawn};
+use futures::{executor::ThreadPoolBuilder, future::FutureObj, prelude::*, task::Spawn};
 use log::{debug, info};
 use romio::tcp::{TcpListener, TcpStream};
 use std::{
@@ -28,7 +28,10 @@ impl Service {
     }
 
     pub async fn serve(&mut self) {
-        let mut threadpool = ThreadPool::new().unwrap();
+        let mut threadpool = ThreadPoolBuilder::new()
+            .pool_size(self.config.local_threadpool_size)
+            .create()
+            .unwrap();
         let listener = TcpListener::bind(&self.config.local_addr)
             .unwrap_or_else(|e| panic!("listen on {} failed {}", self.config.local_addr, e));
         let mut incoming = listener.incoming();

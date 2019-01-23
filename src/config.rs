@@ -12,6 +12,7 @@ use std::{
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct ConfigJson {
     local_port: u16,
+    local_threadpool_size: usize,
     server_ip: String,
     server_port: u16,
     password: String,
@@ -31,6 +32,7 @@ impl ConfigJson {
 
 pub struct SsConfig {
     pub local_addr: SocketAddr,
+    pub local_threadpool_size: usize,
     pub server_addr: SocketAddr,
     pub enc_key: Bytes,
     pub method: Bytes,
@@ -50,6 +52,7 @@ impl SsConfig {
 
         let s = SsConfig {
             local_addr,
+            local_threadpool_size: json.local_threadpool_size,
             server_addr,
             enc_key: CipherMethod::derive_key(json.password.as_bytes()),
             method: Bytes::from(json.method),
