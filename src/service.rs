@@ -14,7 +14,13 @@ use std::{
 };
 
 // const LISTENER: Token = Token(0);
-async fn handle_sock5_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {}
+async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
+    if shared_conf.keeplive.is_some() {
+        stream.set_keepalive(shared_conf.keeplive).unwrap();
+    }
+
+    let (r, w) = stream.split();
+}
 
 pub struct Service {
     config: Arc<SsConfig>,
@@ -37,7 +43,7 @@ impl Service {
         let mut incoming = listener.incoming();
         info!("Listening on: {}", self.config.local_addr);
         while let Some(Ok(stream)) = await!(incoming.next()) {
-            let fut = handle_sock5_connection(self.config.clone(), stream);
+            let fut = run_shadowsock_connection(self.config.clone(), stream);
             threadpool.spawn_obj(FutureObj::new(Box::pin(fut))).unwrap();
         }
     }

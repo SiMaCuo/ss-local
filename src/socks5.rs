@@ -1,14 +1,17 @@
+use super::leakybuf::LeakyBuf;
 use bytes::{Buf, Bytes, BytesMut};
 use futures::{
     io::{AsyncReadExt, AsyncWriteExt},
+    prelude::*,
     try_ready,
 };
 use std::{
+    cell::Cell,
     fmt::{self, Debug, Formatter},
-    future::Future,
     io::{self, Cursor, Error, ErrorKind},
     net::{self, IpAddr, Ipv4Addr, Ipv6Addr},
     pin::Pin,
+    sync::Arc,
     task::{LocalWaker, Poll},
 };
 
@@ -16,7 +19,8 @@ pub const CMD_HEAD_LEN: usize = 4;
 pub const CMD_IPV4_LEN: usize = CMD_HEAD_LEN + 4 + 2;
 pub const CMD_IPV6_LEN: usize = CMD_HEAD_LEN + 16 + 2;
 pub const METHOD_SELECT_HEAD_LEN: usize = 2;
-const SS_MAX_ADDRESSING_LEN: usize = 1 + 1 + 255 + 2;
+pub const SS_MAX_ADDRESSING_LEN: usize = 1 + 1 + 255 + 2;
+pub const TCP_CHUNK_LEN: usize = 1452;
 
 pub const SOCKS5_VERSION: u8 = 5;
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -78,6 +82,68 @@ impl Method {
             s5code::SOCKS5_METHOD_NO_ACCEPT => Some(Method::NoAcceptMethod),
             _ => None,
         }
+    }
+}
+
+struct HandShakeResponse {
+    pub code: u8,
+}
+
+impl HandShakeResponse {
+    fn new(code: u8) -> Self {
+        HandShakeResponse { code }
+    }
+}
+
+struct HandShakeRequest;
+
+impl HandShakeRequest {
+    async fn parse_from<R>(r: &mut R, leaky: Arc<Cell<LeakyBuf>>) -> Result<(usize, usize), io::Error>
+    where
+        R: AsyncReadExt,
+    {
+        let buf = leaky.get_mut().get();
+        let read_len = await!(r.read(&mut buf[..buf.len()]))?;
+        // let fut = r.read(&mut buf[..buf.len()]).then(|r| {
+        //     let mut resp = HandShakeResponse::new(s5code::SOCKS5_METHOD_NO_ACCEPT);
+        //
+        //     if let Ok(n) = r {
+        //         if n == 0 {
+        //             return Ok((resp, Error::from(ErrorKind::UnexpectedEof)));
+        //         }
+        //
+        //         if n < 2 {
+        //             return Ok((resp, Error::new(ErrorKind::Other, "not receive enough data")));
+        //         }
+        //
+        //         let reader = Cursor::new(&buf[..2]);
+        //         if reader.get_u8() != SOCKS5_VERSION {
+        //             return Ok((resp, Error::new(ErrorKind::Other, "wrong sock5 version number")));
+        //         }
+        //
+        //         let method_num = reader.get_u8();
+        //         if n != usize::from(2 + method_num) {
+        //             return Ok((
+        //                 resp,
+        //                 Error::new(ErrorKind::Other, "not receive all the autu methods data"),
+        //             ));
+        //         }
+        //
+        //         if let Some(_) = &buf[2..n].iter().position(|&u| u == s5code::SOCKS5_METHOD_NO_AUTH) {
+        //             resp.code = s5code::SOCKS5_METHOD_NO_AUTH;
+        //
+        //             Ok(resp, Error::from(ErrorKind::UnexpectedEof));
+        //         }
+        //         // } else {
+        //         //     (
+        //         //         resp,
+        //         //         Error::new(ErrorKind::Other, "no acceptable authentication method"),
+        //         //     )
+        //         // }
+        //     }
+        // });
+
+        Ok((0, 0))
     }
 }
 

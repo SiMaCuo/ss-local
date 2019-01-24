@@ -1,4 +1,5 @@
 use std::{
+    ops::{Deref, DerefMut, Drop},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -7,6 +8,37 @@ use std::{
 };
 
 use bytes::BytesMut;
+
+pub struct LeakyWrap<'a> {
+    chunk: BytesMut,
+    leaky: &'a mut LeakyBuf,
+}
+
+impl<'a> LeakyWrap<'a> {
+    fn new(chunk: BytesMut, leaky: &'a mut LeakyBuf) -> Self {
+        LeakyWrap { chunk, leaky }
+    }
+}
+
+impl<'a> Deref for LeakyWrap<'a> {
+    type Target = BytesMut;
+
+    fn deref(&self) -> &BytesMut {
+        &self.chunk
+    }
+}
+
+impl<'a> DerefMut for LeakyWrap<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.chunk
+    }
+}
+
+impl<'a> Drop for LeakyWrap<'a> {
+    fn drop(&mut self) {
+        // self.leaky.put(self.chunk)
+    }
+}
 
 pub struct LeakyBuf {
     spin: Arc<AtomicUsize>,
@@ -23,14 +55,18 @@ impl LeakyBuf {
         }
     }
 
-    fn get(&mut self) -> BytesMut {
+    pub fn get(&mut self) -> BytesMut {
         while self.spin.compare_and_swap(0, 1, Ordering::Acquire) != 0 {}
 
-        let chunk = if self.stack.len() > 0 {
+        let mut chunk = if self.stack.len() > 0 {
             self.stack.pop().unwrap()
         } else {
             BytesMut::with_capacity(self.chunk_len)
         };
+
+        unsafe {
+            chunk.set_len(self.chunk_len);
+        }
 
         self.spin.store(0, Ordering::Release);
 
