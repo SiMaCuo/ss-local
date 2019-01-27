@@ -25,7 +25,6 @@ impl CipherMethod {
             CipherMethod::Aes256Gcm => AES_256_GCM.key_len(),
             CipherMethod::Chacha20IetfPoly1305 => chacha20poly1305_ietf::KEYBYTES,
             CipherMethod::XChacha20IetfPoly1305 => unimplemented!(),
-            _ => unimplemented!(),
         }
     }
 
@@ -34,7 +33,6 @@ impl CipherMethod {
             CipherMethod::Aes256Gcm => AES_256_GCM.tag_len(),
             CipherMethod::Chacha20IetfPoly1305 => chacha20poly1305_ietf::TAGBYTES,
             CipherMethod::XChacha20IetfPoly1305 => unimplemented!(),
-            _ => unimplemented!(),
         }
     }
 
@@ -47,7 +45,6 @@ impl CipherMethod {
             CipherMethod::Aes256Gcm => AES_256_GCM.nonce_len(),
             CipherMethod::Chacha20IetfPoly1305 => chacha20poly1305_ietf::NONCEBYTES,
             CipherMethod::XChacha20IetfPoly1305 => unimplemented!(),
-            _ => unimplemented!(),
         }
     }
 

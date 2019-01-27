@@ -1,26 +1,19 @@
-use std::{
-    ops::{Deref, DerefMut, Drop},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
-    vec::Vec,
-};
-
 use bytes::BytesMut;
+use crossbeam::crossbeam_channel::{bounded, select, Receiver, Sender};
+use std::ops::{Deref, DerefMut};
 
-pub struct LeakyWrap<'a> {
+pub struct LeakyBufGuard<'a> {
     chunk: BytesMut,
-    leaky: &'a mut LeakyBuf,
+    leaky: &'a LeakyBuf,
 }
 
-impl<'a> LeakyWrap<'a> {
-    fn new(chunk: BytesMut, leaky: &'a mut LeakyBuf) -> Self {
-        LeakyWrap { chunk, leaky }
+impl<'a> LeakyBufGuard<'a> {
+    fn new(chunk: BytesMut, leaky: &'a LeakyBuf) -> Self {
+        LeakyBufGuard { chunk, leaky }
     }
 }
 
-impl<'a> Deref for LeakyWrap<'a> {
+impl<'a> Deref for LeakyBufGuard<'a> {
     type Target = BytesMut;
 
     fn deref(&self) -> &BytesMut {
@@ -28,62 +21,60 @@ impl<'a> Deref for LeakyWrap<'a> {
     }
 }
 
-impl<'a> DerefMut for LeakyWrap<'a> {
+impl<'a> DerefMut for LeakyBufGuard<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.chunk
     }
 }
 
-impl<'a> Drop for LeakyWrap<'a> {
+impl<'a> Drop for LeakyBufGuard<'a> {
     fn drop(&mut self) {
-        // self.leaky.put(self.chunk)
+        let chunk = std::mem::replace(&mut self.chunk, BytesMut::new());
+
+        self.leaky.put(chunk);
     }
 }
 
 pub struct LeakyBuf {
-    spin: Arc<AtomicUsize>,
-    stack: Vec<BytesMut>,
+    tx: Sender<BytesMut>,
+    rx: Receiver<BytesMut>,
     chunk_len: usize,
 }
 
 impl LeakyBuf {
     fn new(chunk_len: usize, capacity: usize) -> Self {
-        LeakyBuf {
-            spin: Arc::new(AtomicUsize::new(0)),
-            stack: Vec::with_capacity(capacity),
-            chunk_len,
-        }
+        let (tx, rx) = bounded::<BytesMut>(capacity);
+        LeakyBuf { tx, rx, chunk_len }
     }
 
-    pub fn get(&mut self) -> BytesMut {
-        while self.spin.compare_and_swap(0, 1, Ordering::Acquire) != 0 {}
+    pub fn get(&self) -> BytesMut {
+        let mut chunk = select! {
+            recv(self.rx) -> msg => {
+                match msg {
+                    Ok(buf) => buf,
+                    Err(e) => panic!("can not being here {}", e),
+                }
+            },
 
-        let mut chunk = if self.stack.len() > 0 {
-            self.stack.pop().unwrap()
-        } else {
-            BytesMut::with_capacity(self.chunk_len)
+            default => BytesMut::with_capacity(self.chunk_len),
         };
 
         unsafe {
             chunk.set_len(self.chunk_len);
         }
 
-        self.spin.store(0, Ordering::Release);
-
         chunk
     }
 
-    fn put(&mut self, chunk: BytesMut) {
+    fn put(&self, chunk: BytesMut) {
+        debug_assert!(chunk.capacity() == self.chunk_len);
         if chunk.capacity() != self.chunk_len {
             return;
         }
 
-        while self.spin.compare_and_swap(0, 1, Ordering::Acquire) != 0 {}
-
-        if self.stack.len() != self.stack.capacity() {
-            self.stack.push(chunk);
-        }
-
-        self.spin.store(0, Ordering::Release);
+        select! {
+            send(self.tx, chunk) -> _ => {},
+            default => {},
+        };
     }
 }

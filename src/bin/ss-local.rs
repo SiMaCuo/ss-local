@@ -1,16 +1,8 @@
 #![feature(async_await, await_macro, futures_api)]
+#![allow(dead_code)]
 use futures::executor;
 use log4rs;
-
-mod config;
-mod conn;
-mod crypto;
-mod err;
-mod leakybuf;
-mod rccell;
-mod service;
-mod shut;
-mod socks5;
+use shadowsocks::service;
 
 fn main() {
     log4rs::init_file("log4rs.yml", Default::default()).unwrap();

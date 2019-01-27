@@ -1,26 +1,21 @@
-use super::leakybuf::LeakyBuf;
-use bytes::{Buf, Bytes, BytesMut};
-use futures::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    prelude::*,
-    try_ready,
-};
+use crate::leakybuf::{LeakyBuf, LeakyBufGuard};
+use bytes::Buf;
+use futures::io::{AsyncReadExt, AsyncWriteExt};
 use std::{
-    cell::Cell,
     fmt::{self, Debug, Formatter},
     io::{self, Cursor, Error, ErrorKind},
     net::{self, IpAddr, Ipv4Addr, Ipv6Addr},
-    pin::Pin,
     sync::Arc,
-    task::{LocalWaker, Poll},
 };
+
+use romio::tcp::TcpStream;
 
 pub const CMD_HEAD_LEN: usize = 4;
 pub const CMD_IPV4_LEN: usize = CMD_HEAD_LEN + 4 + 2;
 pub const CMD_IPV6_LEN: usize = CMD_HEAD_LEN + 16 + 2;
 pub const METHOD_SELECT_HEAD_LEN: usize = 2;
 pub const SS_MAX_ADDRESSING_LEN: usize = 1 + 1 + 255 + 2;
-pub const TCP_CHUNK_LEN: usize = 1452;
+pub const SS_TCP_CHUNK_LEN: usize = 1452;
 
 pub const SOCKS5_VERSION: u8 = 5;
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -86,68 +81,86 @@ impl Method {
 }
 
 struct HandShakeResponse {
-    pub code: u8,
+    pub msg: [u8; 2],
 }
 
 impl HandShakeResponse {
     fn new(code: u8) -> Self {
-        HandShakeResponse { code }
+        let msg: [u8; 2] = [SOCKS5_VERSION, code];
+        HandShakeResponse { msg }
+    }
+
+    fn set_code(&mut self, code: u8) {
+        self.msg[1] = code;
+    }
+
+    async fn write_to<'a, W>(&'a self, w: &'a mut W) -> io::Result<()>
+    where
+        W: AsyncWriteExt,
+    {
+        await!(w.write_all(&self.msg[..]))
     }
 }
 
-struct HandShakeRequest;
+struct Socks5HandShake;
 
-impl HandShakeRequest {
-    async fn parse_from<R>(r: &mut R, leaky: Arc<Cell<LeakyBuf>>) -> Result<(usize, usize), io::Error>
+impl Socks5HandShake {
+    async fn deal_with<'a, R, W>(&'a self, r: &'a mut R, w: &'a mut W, leaky: Arc<LeakyBuf>) -> Option<Error>
     where
         R: AsyncReadExt,
+        W: AsyncWriteExt,
     {
-        let buf = leaky.get_mut().get();
-        let read_len = await!(r.read(&mut buf[..buf.len()]))?;
-        // let fut = r.read(&mut buf[..buf.len()]).then(|r| {
-        //     let mut resp = HandShakeResponse::new(s5code::SOCKS5_METHOD_NO_ACCEPT);
-        //
-        //     if let Ok(n) = r {
-        //         if n == 0 {
-        //             return Ok((resp, Error::from(ErrorKind::UnexpectedEof)));
-        //         }
-        //
-        //         if n < 2 {
-        //             return Ok((resp, Error::new(ErrorKind::Other, "not receive enough data")));
-        //         }
-        //
-        //         let reader = Cursor::new(&buf[..2]);
-        //         if reader.get_u8() != SOCKS5_VERSION {
-        //             return Ok((resp, Error::new(ErrorKind::Other, "wrong sock5 version number")));
-        //         }
-        //
-        //         let method_num = reader.get_u8();
-        //         if n != usize::from(2 + method_num) {
-        //             return Ok((
-        //                 resp,
-        //                 Error::new(ErrorKind::Other, "not receive all the autu methods data"),
-        //             ));
-        //         }
-        //
-        //         if let Some(_) = &buf[2..n].iter().position(|&u| u == s5code::SOCKS5_METHOD_NO_AUTH) {
-        //             resp.code = s5code::SOCKS5_METHOD_NO_AUTH;
-        //
-        //             Ok(resp, Error::from(ErrorKind::UnexpectedEof));
-        //         }
-        //         // } else {
-        //         //     (
-        //         //         resp,
-        //         //         Error::new(ErrorKind::Other, "no acceptable authentication method"),
-        //         //     )
-        //         // }
-        //     }
-        // });
+        let mut buf = leaky.get();
+        let len = buf.len();
+        let rlt = await!(r.read(&mut buf[..len]));
+        let mut resp = HandShakeResponse::new(s5code::SOCKS5_METHOD_NO_ACCEPT);
+        let err = match rlt {
+            Ok(read_len) => {
+                if read_len == 0 {
+                    return Some(Error::from(ErrorKind::UnexpectedEof));
+                }
 
-        Ok((0, 0))
+                if read_len < 2 {
+                    return Some(Error::new(ErrorKind::Other, "not receive enough data"));
+                }
+
+                let mut reader = Cursor::new(&buf[..2]);
+                if reader.get_u8() != SOCKS5_VERSION {
+                    return Some(Error::new(ErrorKind::Other, "wrong version number"));
+                }
+
+                let method_num = reader.get_u8();
+                if read_len != usize::from(2 + method_num) {
+                    return Some(Error::new(ErrorKind::Other, "not receive all autu methods data"));
+                }
+
+                if let Some(_) = &buf[2..read_len]
+                    .iter()
+                    .position(|u| *u == s5code::SOCKS5_METHOD_NO_AUTH)
+                {
+                    resp.set_code(s5code::SOCKS5_METHOD_NO_AUTH);
+
+                    return None;
+                }
+
+                Some(Error::new(ErrorKind::Other, "no acceptable method"))
+            }
+
+            Err(e) => Some(e),
+        };
+
+        let fut = async {
+            match await!(resp.write_to(w)) {
+                Ok(_) => err,
+                Err(e) => err.or(Some(e)),
+            }
+        };
+
+        await!(fut)
     }
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(PartialEq, Clone, Debug, Copy)]
 enum Command {
     Connect,
     Bind,
@@ -155,19 +168,21 @@ enum Command {
 }
 
 impl Command {
-    fn as_u8(self) -> u8 {
+    fn as_u8(&self) -> u8 {
+        #[cfg_attr(rustfmt, rustfmt_skip)]
         match self {
-            Command::Connect => s5code::SOCKS5_COMMAND_CONNECT,
-            Command::Bind => s5code::SOCKS5_COMMAND_BIND,
-            Command::UdpAssociate => s5code::SOCKS5_COMMAND_UDP_ASSOCIATE,
+            Command::Connect        => s5code::SOCKS5_COMMAND_CONNECT,
+            Command::Bind           => s5code::SOCKS5_COMMAND_BIND,
+            Command::UdpAssociate   => s5code::SOCKS5_COMMAND_UDP_ASSOCIATE,
         }
     }
 
     fn from_u8(code: u8) -> Option<Command> {
+        #[cfg_attr(rustfmt, rustfmt_skip)]
         match code {
-            s5code::SOCKS5_COMMAND_CONNECT => Some(Command::Connect),
-            s5code::SOCKS5_COMMAND_BIND => Some(Command::Bind),
-            s5code::SOCKS5_COMMAND_UDP_ASSOCIATE => Some(Command::UdpAssociate),
+            s5code::SOCKS5_COMMAND_CONNECT          => Some(Command::Connect),
+            s5code::SOCKS5_COMMAND_BIND             => Some(Command::Bind),
+            s5code::SOCKS5_COMMAND_UDP_ASSOCIATE    => Some(Command::UdpAssociate),
             _ => None,
         }
     }
@@ -181,19 +196,21 @@ enum AddrType {
 }
 
 impl AddrType {
-    fn as_u8(self) -> u8 {
+    fn as_u8(&self) -> u8 {
+        #[cfg_attr(rustfmt, rustfmt_skip)]
         match self {
-            AddrType::V4 => s5code::SOCKS5_ADDRTYPE_V4,
-            AddrType::Domain => s5code::SOCKS5_ADDRTYPE_DOMAIN,
-            AddrType::V6 => s5code::SOCKS5_ADDRTYPE_V6,
+            AddrType::V4        => s5code::SOCKS5_ADDRTYPE_V4,
+            AddrType::Domain    => s5code::SOCKS5_ADDRTYPE_DOMAIN,
+            AddrType::V6        => s5code::SOCKS5_ADDRTYPE_V6,
         }
     }
 
     fn from_u8(code: u8) -> AddrType {
+        #[cfg_attr(rustfmt, rustfmt_skip)]
         match code {
-            s5code::SOCKS5_ADDRTYPE_V4 => AddrType::V4,
-            s5code::SOCKS5_ADDRTYPE_DOMAIN => AddrType::Domain,
-            s5code::SOCKS5_ADDRTYPE_V6 => AddrType::V6,
+            s5code::SOCKS5_ADDRTYPE_V4      => AddrType::V4,
+            s5code::SOCKS5_ADDRTYPE_DOMAIN  => AddrType::Domain,
+            s5code::SOCKS5_ADDRTYPE_V6      => AddrType::V6,
             _ => unreachable!(),
         }
     }
@@ -214,7 +231,7 @@ enum Reply {
 
 impl Reply {
     #[cfg_attr(rustfmt, rustfmt_skip)]
-    fn as_u8(self) -> u8 {
+    fn as_u8(&self) -> u8 {
         match self {
             Reply::Succeeded                => s5code::SOCKS5_REPLY_SUCCEEDED,
             Reply::GeneralFailure           => s5code::SOCKS5_REPLY_GENERAL_FAILURE,
@@ -259,6 +276,40 @@ impl Address {
             Address::DomainName(ref dmname, _) => 1 + 1 + dmname.len() + 2,
         }
     }
+
+    pub async fn connect<'a, W>(&'a self, w: &'a mut W) -> io::Result<TcpStream>
+    where
+        W: AsyncWriteExt,
+    {
+        let rlt = match self {
+            Address::SocketAddr(addr) => await!(TcpStream::connect(addr)),
+
+            Address::DomainName(ref link, port) => {
+                let socket_addr: Result<net::SocketAddr, net::AddrParseError> = format!("{}:{}", link, port).parse();
+                match socket_addr {
+                    Err(_) => Err(ErrorKind::AddrNotAvailable.into()),
+
+                    Ok(addr) => await!(TcpStream::connect(&addr)),
+                }
+            }
+        };
+
+        if let Err(e) = rlt {
+            #[cfg_attr(rustfmt, rustfmt_skip)]
+            let code = match e.kind() {
+                ErrorKind::ConnectionRefused    => Reply::ConnectRefused,
+                ErrorKind::ConnectionAborted    => Reply::ConnectDisallowed,
+                _                               => Reply::NetworkUnreachable,
+            };
+
+            let resp = [SOCKS5_VERSION, code.as_u8(), 0, s5code::SOCKS5_ADDRTYPE_V4];
+            let _ = await!(w.write_all(&resp));
+
+            return Err(e);
+        }
+
+        rlt
+    }
 }
 
 impl Debug for Address {
@@ -270,43 +321,15 @@ impl Debug for Address {
     }
 }
 
-pub struct ReadAddress<R>
-where
-    R: AsyncReadExt,
-{
-    reader: Option<R>,
-    buf: BytesMut,
-    read_len: usize,
-}
+struct ReadAddress;
 
-impl<R> ReadAddress<R>
-where
-    R: AsyncReadExt,
-{
-    pub fn new(r: R) -> ReadAddress<R> {
-        let mut buf = BytesMut::with_capacity(SS_MAX_ADDRESSING_LEN);
-        unsafe {
-            buf.set_len(SS_MAX_ADDRESSING_LEN);
-        }
-        ReadAddress {
-            reader: Some(r),
-            buf,
-            read_len: 0,
-        }
-    }
-
-    pub async fn read_addr(&mut self) -> io::Result<Address> {
-        let read_len = await!(self.reader.as_mut().unwrap().read(&mut self.buf[self.read_len..]))?;
-        if read_len == 0 {
-            return Err(Error::from(ErrorKind::UnexpectedEof));
-        }
-        self.read_len += read_len;
-
-        let mut stream = Cursor::new(&self.buf[..self.read_len]);
+impl ReadAddress {
+    async fn read_from(buf: &[u8]) -> io::Result<Address> {
+        let mut stream = Cursor::new(buf);
         let atyp = AddrType::from_u8(stream.get_u8());
         let address = match atyp {
             AddrType::V4 => {
-                debug_assert_eq!(self.read_len, 1 + 4 + 2);
+                debug_assert_eq!(buf.len(), 1 + 4 + 2);
 
                 let addr_v4 = IpAddr::V4(Ipv4Addr::new(
                     stream.get_u8(),
@@ -320,7 +343,7 @@ where
             }
 
             AddrType::V6 => {
-                debug_assert_eq!(self.read_len, 1 + 16 + 2);
+                debug_assert_eq!(buf.len(), 1 + 16 + 2);
 
                 let addr_v6 = IpAddr::V6(Ipv6Addr::new(
                     stream.get_u16_be(),
@@ -337,11 +360,11 @@ where
                 Address::SocketAddr(net::SocketAddr::new(addr_v6, port))
             }
             AddrType::Domain => {
-                debug_assert!(self.read_len > 2);
+                debug_assert!(buf.len() > 2);
                 let dmlen = stream.get_u8() as usize;
-                debug_assert!(self.read_len == 2 + dmlen + 2);
+                debug_assert_eq!(buf.len(), 2 + dmlen + 2);
 
-                let dmname = String::from_utf8_lossy(&self.buf[2..2 + dmlen]).to_string();
+                let dmname = String::from_utf8_lossy(&buf[2..2 + dmlen]).into();
                 stream.set_position((2 + dmlen) as u64);
                 let port = stream.get_u16_be();
                 Address::DomainName(dmname, port)
@@ -349,5 +372,52 @@ where
         };
 
         Ok(address)
+    }
+}
+
+struct TcpConnect;
+
+impl TcpConnect {
+    fn new() -> Self {
+        TcpConnect {}
+    }
+
+    async fn deal_with<'a, R, W>(r: &'a mut R, w: &'a mut W, buf: &'a mut LeakyBufGuard<'a>) -> io::Result<Address>
+    where
+        R: AsyncReadExt,
+        W: AsyncWriteExt,
+    {
+        debug_assert_eq!(buf.len(), buf.capacity());
+
+        let len = buf.len();
+        let rlt = match await!(r.read(&mut buf[..len])) {
+            Err(e) => Err(e),
+
+            Ok(n) => {
+                debug_assert!(n >= 4);
+
+                let mut stream = Cursor::new(&buf[..n]);
+                let (ver, cmd, _) = (stream.get_u8(), stream.get_u8(), stream.get_u8());
+                if ver != SOCKS5_VERSION {
+                    return Err(Error::new(ErrorKind::Other, "tcp connect invalid socks5 version"));
+                }
+
+                if Command::from_u8(cmd).unwrap() != Command::Connect {
+                    let resp = [
+                        SOCKS5_VERSION,
+                        s5code::SOCKS5_REPLY_COMMAND_NOT_SUPPORTED,
+                        0,
+                        s5code::SOCKS5_ADDRTYPE_V4,
+                    ];
+                    let _ = await!(w.write_all(&resp));
+
+                    return Err(Error::new(ErrorKind::Other, "command not supported"));
+                }
+
+                await!(ReadAddress::read_from(&buf[3..n]))
+            }
+        };
+
+        rlt
     }
 }

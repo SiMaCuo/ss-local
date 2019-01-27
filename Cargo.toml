@@ -1,12 +1,17 @@
 [package]
-name = "ss-local"
+name = "shadowsock-local"
 version = "0.1.0"
 authors = ["simacuo <noemail@anybox.com>"]
 edition = "2018"
 
+[lib]
+name = "shadowsocks"
+
+[[bin]]
+name = "ss-local"
+path = "src/bin/ss-local.rs"
+
 [dependencies]
-mio = "0.6"
-slab = "0.4"
 log = "0.4"
 chrono = "0.4"
 log4rs = "0.8"
@@ -16,12 +21,12 @@ serde_derive = "1.0"
 ring = "0.14"
 rand = "0.6"
 openssl = "0.10"
-md-5 = "0.8"
 digest = "0.8"
 bytes = "0.4"
 sodiumoxide = "0.2"
 romio = "0.3.0-alpha.1"
 byteorder = "1.3"
+crossbeam = "0.6"
 
 [dependencies.futures]
 version = "0.3.0-alpha.12"
