@@ -16,8 +16,8 @@ use std::{
 
 // const LISTENER: Token = Token(0);
 async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
-    if shared_conf.keeplive.is_some() {
-        stream.set_keepalive(shared_conf.keeplive).unwrap();
+    if shared_conf.timeout().is_some() {
+        stream.set_keepalive(shared_conf.timeout()).unwrap();
     }
 
     let (r, w) = stream.split();
@@ -36,13 +36,13 @@ impl Service {
 
     pub async fn serve(&mut self) {
         let mut threadpool = ThreadPoolBuilder::new()
-            .pool_size(self.config.local_threadpool_size)
+            .pool_size(self.config.romio_threadpool_size())
             .create()
             .unwrap();
-        let listener = TcpListener::bind(&self.config.local_addr)
-            .unwrap_or_else(|e| panic!("listen on {} failed {}", self.config.local_addr, e));
+        let listener = TcpListener::bind(&self.config.listen_addr())
+            .unwrap_or_else(|e| panic!("listen on {} failed {}", self.config.listen_addr(), e));
         let mut incoming = listener.incoming();
-        info!("Listening on: {}", self.config.local_addr);
+        info!("Listening on: {}", self.config.listen_addr());
         while let Some(Ok(stream)) = await!(incoming.next()) {
             let fut = run_shadowsock_connection(self.config.clone(), stream);
             threadpool.spawn_obj(FutureObj::new(Box::pin(fut))).unwrap();

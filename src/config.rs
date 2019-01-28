@@ -1,4 +1,4 @@
-use super::crypto::cipher::CipherMethod;
+use crate::crypto::cipher::CipherMethod;
 use bytes::Bytes;
 use serde_derive::{Deserialize, Serialize};
 use std::{
@@ -30,13 +30,14 @@ impl ConfigJson {
     }
 }
 
+#[derive(Clone)]
 pub struct SsConfig {
-    pub local_addr: SocketAddr,
-    pub local_threadpool_size: usize,
-    pub server_addr: SocketAddr,
-    pub enc_key: Bytes,
-    pub method: Bytes,
-    pub keeplive: Option<Duration>,
+    local_addr: SocketAddr,
+    local_threadpool_size: usize,
+    server_addr: SocketAddr,
+    enc_key: Bytes,
+    method: CipherMethod,
+    keeplive: Option<Duration>,
 }
 
 impl SsConfig {
@@ -55,10 +56,34 @@ impl SsConfig {
             local_threadpool_size: json.local_threadpool_size,
             server_addr,
             enc_key: CipherMethod::derive_key(json.password.as_bytes()),
-            method: Bytes::from(json.method),
+            method: json.method.parse().unwrap(),
             keeplive,
         };
 
         Ok(s)
+    }
+
+    pub fn listen_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    pub fn romio_threadpool_size(&self) -> usize {
+        self.local_threadpool_size
+    }
+
+    pub fn ss_server_addr(&self) -> SocketAddr {
+        self.server_addr
+    }
+
+    pub fn key_derived_from_pass(&self) -> &[u8] {
+        &self.enc_key[..]
+    }
+
+    pub fn method(&self) -> CipherMethod {
+        self.method
+    }
+
+    pub fn timeout(&self) -> Option<Duration> {
+        self.keeplive
     }
 }
