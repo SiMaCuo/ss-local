@@ -1,23 +1,22 @@
-use cipher::CipherMethod::{self, *};
-use ring::aead::{
-    open_in_place,
-    seal_in_place,
-    Nonce,
-    Ada,
-    OpeningKey,
-    SealingKey,
-    AES_256_GCM,
-    CIPHER_CHACHA20_IETF_POLY1305,
+use super::cipher::CipherMethod::{self, *};
+use ring::aead::{open_in_place, seal_in_place, Aad, Nonce, OpeningKey, SealingKey, AES_256_GCM, CHACHA20_POLY1305};
+
+use super::aead::{AeadDecryptor, AeadEncryptor};
+use byte_string::ByteStr;
+use bytes::{BufMut, Bytes, BytesMut};
+use log::error;
+use sodiumoxide::utils::increment_le;
+use std::{
+    io::{self, Error, ErrorKind},
+    ptr,
 };
 
-use aead::{AeadDecryptor, AeadEncryptor};
-
 enum RingAeadCryptor {
-    Seal(SealingKey, Nonce),
-    Open(OpeningKey, Nonce),
+    Seal(SealingKey, Bytes),
+    Open(OpeningKey, Bytes),
 }
 
-struct RingAeadCipher {
+pub struct RingAeadCipher {
     cryptor: RingAeadCryptor,
     method: CipherMethod,
     secret_key: Bytes,
@@ -33,9 +32,9 @@ impl RingAeadCipher {
             nonce.set_len(nonce_len);
             ptr::write_bytes(nonce.as_mut_ptr(), 0, nonce_len);
         }
-        
-        let secret_key = method.make_subkey(key_derive_from_pass, salt);
-        let cryptor = new_cryptor(method, secret_key, &nonce, is_seal);
+
+        let secret_key = method.make_secret_key(key_derive_from_pass, salt);
+        let cryptor = RingAeadCipher::new_cryptor(method, &secret_key, &nonce, is_seal);
         let tag_len = method.tag_len();
 
         RingAeadCipher {
@@ -48,25 +47,25 @@ impl RingAeadCipher {
     }
 
     fn new_cryptor(m: CipherMethod, key: &Bytes, in_nonce: &[u8], is_seal: bool) -> RingAeadCryptor {
-        let nonce = Nonce::try_assume_unique_for_key(in_nonce);
+        let nonce = Bytes::from(in_nonce);
         let cryptor = match m {
             Aes256Gcm => {
                 if is_seal {
-                    RingAeadCryptor::Seal(SealingKey::new(&AES_256_GCM, &key), nonce)
+                    RingAeadCryptor::Seal(SealingKey::new(&AES_256_GCM, &key).unwrap(), nonce)
                 } else {
-                    RingAeadCryptor::Open(OpeningKey::new(&AES_256_GCM, &key), nonce)
+                    RingAeadCryptor::Open(OpeningKey::new(&AES_256_GCM, &key).unwrap(), nonce)
                 }
             }
 
             Chacha20IetfPoly1305 => {
                 if is_seal {
-                    RingAeadCryptor::Seal(SealingKey::new(&CIPHER_CHACHA20_IETF_POLY1305, &key), nonce)
+                    RingAeadCryptor::Seal(SealingKey::new(&CHACHA20_POLY1305, &key).unwrap(), nonce)
                 } else {
-                    RingAeadCryptor::Open(Openingkey::new(&CIPHER_CHACHA20_IETF_POLY1305, &key), nonce)
+                    RingAeadCryptor::Open(OpeningKey::new(&CHACHA20_POLY1305, &key).unwrap(), nonce)
                 }
             }
 
-            _ => unimplmented!(),
+            _ => unimplemented!(),
         };
 
         cryptor
@@ -75,11 +74,11 @@ impl RingAeadCipher {
     fn increse_nonce(&mut self) {
         increment_le(&mut self.nonce);
 
-        if is_seal = match self.cryptor {
+        let is_seal = match self.cryptor {
             RingAeadCryptor::Seal(..) => true,
             RingAeadCryptor::Open(..) => false,
         };
-        
+
         let cryptor = RingAeadCipher::new_cryptor(self.method, &self.secret_key, &self.nonce, is_seal);
         std::mem::replace(&mut self.cryptor, cryptor);
     }
@@ -87,31 +86,40 @@ impl RingAeadCipher {
 
 impl AeadDecryptor for RingAeadCipher {
     fn decrypt(&mut self, ciphertext: &[u8], plaintext: &mut [u8]) -> io::Result<()> {
-        debug_assert_eq!(plaintext.len(), ciphertext.len()-self.tag_len);
+        debug_assert_eq!(plaintext.len(), ciphertext.len() - self.tag_len);
 
         let mut buf = BytesMut::with_capacity(ciphertext.len());
         buf.put_slice(ciphertext);
 
-        let rlt = if let RingAeadCryptor::Open(ref key, ref nonce) = self.cryptor {
-            match open_in_place(key, nonce, Ada::empty(), 0, &mut buf) {
-                Ok(out) => {
-                    plaintext.copy_from_slice(out);
-                    Ok(())
-                }
+        let rlt = {
+            if let RingAeadCryptor::Open(ref key, ref nonce) = self.cryptor {
+                match open_in_place(
+                    key,
+                    Nonce::try_assume_unique_for_key(nonce).unwrap(),
+                    Aad::empty(),
+                    0,
+                    &mut buf,
+                ) {
+                    Ok(out) => {
+                        plaintext.copy_from_slice(out);
+                        Ok(())
+                    }
 
-                Err(e) => {
-                    error!(
-                        "AEAD decrypt failed, nonce={:?}, tag={:?}, err={:?}",
-                        ByteStr::new(nonce.as_ref()),
-                        ByteStr::new(&input[..tag_len]),
-                        err);
+                    Err(e) => {
+                        error!(
+                            "AEAD decrypt failed, nonce={:?}, tag={:?}, err={:?}",
+                            ByteStr::new(nonce.as_ref()),
+                            ByteStr::new(&ciphertext[..self.tag_len]),
+                            e
+                        );
 
-                    Err(Error::new(ErrorKind::Other, "aead decrypt failed"))
+                        Err(Error::new(ErrorKind::Other, "aead decrypt failed"))
+                    }
                 }
+            } else {
+                unreachable!("decrypt called on a non-open cipher");
             }
-        } else {
-            unreachable!("decrypt called on a non-open cipher");
-        }
+        };
 
         self.increse_nonce();
 
@@ -129,14 +137,22 @@ impl AeadEncryptor for RingAeadCipher {
             buf.set_len(ciphertext.len());
         }
 
-        let  rlt = if let RingAeadCryptor::Seal(ref key, ref nonce) = self.cryptor {
-            match seal_in_place(key, nonce, Ada::empty(), &buf, tag_len) {
-                Ok(n) => Ok(()),
+        let rlt = {
+            if let RingAeadCryptor::Seal(ref key, ref nonce) = self.cryptor {
+                match seal_in_place(
+                    key,
+                    Nonce::try_assume_unique_for_key(nonce).unwrap(),
+                    Aad::empty(),
+                    &mut buf,
+                    self.tag_len,
+                ) {
+                    Ok(_) => Ok(()),
 
-                Err(_) => {
-                    error!("aead encrypt failed");
+                    Err(_) => {
+                        error!("aead encrypt failed");
 
-                    Err(Error::new(ErrorKind::Other, "aead encrypt failed"))
+                        Err(Error::new(ErrorKind::Other, "aead encrypt failed"))
+                    }
                 }
             } else {
                 unreachable!("encrypt called on a non-seal cipher");
@@ -148,16 +164,3 @@ impl AeadEncryptor for RingAeadCipher {
         rlt
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-

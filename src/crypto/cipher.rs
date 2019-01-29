@@ -74,16 +74,16 @@ impl CipherMethod {
         salt.freeze()
     }
 
-    pub fn make_subkey(&self, key: &[u8], salt: &[u8]) -> Bytes {
+    pub fn make_secret_key(&self, key: &[u8], salt: &[u8]) -> Bytes {
         let sign_salt = SigningKey::new(&SHA1, salt);
         let key_len = self.key_len();
-        let mut subkey = BytesMut::with_capacity(key_len);
+        let mut skey = BytesMut::with_capacity(key_len);
         unsafe {
-            subkey.set_len(key_len);
+            skey.set_len(key_len);
         }
-        hkdf::extract_and_expand(&sign_salt, key, b"ss-subkey", &mut subkey);
+        hkdf::extract_and_expand(&sign_salt, key, b"ss-subkey", &mut skey);
 
-        subkey.freeze()
+        skey.freeze()
     }
 }
 
