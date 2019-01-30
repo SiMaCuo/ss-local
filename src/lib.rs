@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 mod config;
-mod crypto;
+pub mod crypto;
 mod err;
 mod leakybuf;
 pub mod service;
