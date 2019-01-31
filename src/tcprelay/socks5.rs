@@ -15,8 +15,6 @@ pub const CMD_IPV4_LEN: usize = CMD_HEAD_LEN + 4 + 2;
 pub const CMD_IPV6_LEN: usize = CMD_HEAD_LEN + 16 + 2;
 pub const METHOD_SELECT_HEAD_LEN: usize = 2;
 pub const SS_MAX_ADDRESSING_LEN: usize = 1 + 1 + 255 + 2;
-// ppoe connection mtu seem to be 1492, ip header 20, tcp header 20
-pub const SS_TCP_CHUNK_LEN: usize = 1452;
 
 pub const SOCKS5_VERSION: u8 = 5;
 #[cfg_attr(rustfmt, rustfmt_skip)]
