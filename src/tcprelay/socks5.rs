@@ -1,11 +1,9 @@
-use crate::leakybuf::{LeakyBuf, LeakyBufGuard};
-use bytes::Buf;
+use bytes::{Buf, BufMut, BytesMut};
 use futures::io::{AsyncReadExt, AsyncWriteExt};
 use std::{
     fmt::{self, Debug, Formatter},
     io::{self, Cursor, Error, ErrorKind},
-    net::{self, IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::Arc,
+    net::{self, IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs},
 };
 
 use romio::tcp::TcpStream;
@@ -40,16 +38,6 @@ mod s5code {
     pub const SOCKS5_REPLY_ADDRTYPE_NOT_SUPPORTED: u8   = 0x08;
 }
 
-#[derive(Debug)]
-#[allow(dead_code)]
-pub enum Stage {
-    LocalConnected,
-    SendMethodSelect,
-    HandShake,
-    RemoteConnecting,
-    Streaming,
-}
-
 #[derive(Clone, Debug, Copy)]
 enum Method {
     NoAuth,
@@ -79,6 +67,7 @@ impl Method {
     }
 }
 
+#[derive(Debug)]
 struct HandShakeResponse {
     pub msg: [u8; 2],
 }
@@ -101,29 +90,30 @@ impl HandShakeResponse {
     }
 }
 
-struct Socks5HandShake;
+pub struct Socks5HandShake;
 
 impl Socks5HandShake {
-    async fn deal_with<'a, R, W>(&'a self, r: &'a mut R, w: &'a mut W, leaky: Arc<LeakyBuf>) -> Option<Error>
+    pub async fn deal_with<'a, R, W>(r: &'a mut R, w: &'a mut W, leaky: &'a mut BytesMut) -> Option<Error>
     where
         R: AsyncReadExt,
         W: AsyncWriteExt,
     {
-        let mut buf = leaky.get();
-        let len = buf.len();
-        let rlt = await!(r.read(&mut buf[..len]));
+        leaky.clear();
         let mut resp = HandShakeResponse::new(s5code::SOCKS5_METHOD_NO_ACCEPT);
-        let err = match rlt {
+        let err = match unsafe { await!(r.read(leaky.bytes_mut())) } {
             Ok(read_len) => {
-                if read_len == 0 {
-                    return Some(Error::from(ErrorKind::UnexpectedEof));
+                unsafe {
+                    leaky.advance_mut(read_len);
                 }
 
                 if read_len < 2 {
-                    return Some(Error::new(ErrorKind::Other, "not receive enough data"));
+                    return Some(Error::new(
+                        ErrorKind::Other,
+                        "encounter un-expected eof or not receive enough data",
+                    ));
                 }
 
-                let mut reader = Cursor::new(&buf[..2]);
+                let mut reader = Cursor::new(&leaky[..2]);
                 if reader.get_u8() != SOCKS5_VERSION {
                     return Some(Error::new(ErrorKind::Other, "wrong version number"));
                 }
@@ -133,29 +123,25 @@ impl Socks5HandShake {
                     return Some(Error::new(ErrorKind::Other, "not receive all autu methods data"));
                 }
 
-                if let Some(_) = &buf[2..read_len]
+                if let Some(_) = &leaky[2..read_len]
                     .iter()
                     .position(|u| *u == s5code::SOCKS5_METHOD_NO_AUTH)
                 {
                     resp.set_code(s5code::SOCKS5_METHOD_NO_AUTH);
 
-                    return None;
+                    None
+                } else {
+                    Some(Error::new(ErrorKind::Other, "no acceptable method"))
                 }
-
-                Some(Error::new(ErrorKind::Other, "no acceptable method"))
             }
 
             Err(e) => Some(e),
         };
 
-        let fut = async {
-            match await!(resp.write_to(w)) {
-                Ok(_) => err,
-                Err(e) => err.or(Some(e)),
-            }
-        };
-
-        await!(fut)
+        match await!(resp.write_to(w)) {
+            Ok(_) => err,
+            Err(e) => err.or(Some(e)),
+        }
     }
 }
 
@@ -280,31 +266,73 @@ impl Address {
     where
         W: AsyncWriteExt,
     {
+        let succ = [
+            SOCKS5_VERSION,
+            Reply::Succeeded.as_u8(),
+            0,
+            s5code::SOCKS5_ADDRTYPE_V4,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
+
+        let mut fail = [
+            SOCKS5_VERSION,
+            Reply::GeneralFailure.as_u8(),
+            0,
+            s5code::SOCKS5_ADDRTYPE_V4,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
+
         let rlt = match self {
             Address::SocketAddr(addr) => await!(TcpStream::connect(addr)),
 
-            Address::DomainName(ref link, port) => {
-                let socket_addr: Result<net::SocketAddr, net::AddrParseError> = format!("{}:{}", link, port).parse();
-                match socket_addr {
-                    Err(_) => Err(ErrorKind::AddrNotAvailable.into()),
-
-                    Ok(addr) => await!(TcpStream::connect(&addr)),
+            Address::DomainName(ref dmname, port) => {
+                let mut v: Vec<net::SocketAddr> = Vec::new();
+                if let Ok(addrs) = format!("{}:{}", dmname, port).to_socket_addrs() {
+                    v = addrs.collect();
                 }
+
+                let mut conn_rlt = Err(ErrorKind::AddrNotAvailable.into());
+                for addr in v {
+                    match await!(TcpStream::connect(&addr)) {
+                        Ok(s) => {
+                            conn_rlt = Ok(s);
+                            break;
+                        }
+
+                        Err(e) => conn_rlt = Err(e),
+                    }
+                }
+
+                conn_rlt
             }
         };
 
-        if let Err(e) = rlt {
-            #[cfg_attr(rustfmt, rustfmt_skip)]
-            let code = match e.kind() {
-                ErrorKind::ConnectionRefused    => Reply::ConnectRefused,
-                ErrorKind::ConnectionAborted    => Reply::ConnectDisallowed,
-                _                               => Reply::NetworkUnreachable,
-            };
+        match rlt {
+            Err(ref e) => {
+                #[cfg_attr(rustfmt, rustfmt_skip)]
+                let code = match e.kind() {
+                    ErrorKind::ConnectionRefused    => Reply::ConnectRefused,
+                    ErrorKind::ConnectionAborted    => Reply::ConnectDisallowed,
+                    _                               => Reply::NetworkUnreachable,
+                };
+                fail[1] = code.as_u8();
 
-            let resp = [SOCKS5_VERSION, code.as_u8(), 0, s5code::SOCKS5_ADDRTYPE_V4];
-            let _ = await!(w.write_all(&resp));
+                let _ = await!(w.write_all(&fail));
+            }
 
-            return Err(e);
+            Ok(_) => {
+                let _ = await!(w.write_all(&succ));
+            }
         }
 
         rlt
@@ -374,28 +402,24 @@ impl ReadAddress {
     }
 }
 
-struct TcpConnect;
+pub struct TcpConnect;
 
 impl TcpConnect {
-    fn new() -> Self {
-        TcpConnect {}
-    }
-
-    async fn deal_with<'a, R, W>(r: &'a mut R, w: &'a mut W, buf: &'a mut LeakyBufGuard<'a>) -> io::Result<Address>
+    pub async fn deal_with<'a, R, W>(r: &'a mut R, w: &'a mut W, leaky: &'a mut BytesMut) -> io::Result<Address>
     where
         R: AsyncReadExt,
         W: AsyncWriteExt,
     {
-        debug_assert_eq!(buf.len(), buf.capacity());
-
-        let len = buf.len();
-        let rlt = match await!(r.read(&mut buf[..len])) {
+        leaky.clear();
+        let rlt = match unsafe { await!(r.read(leaky.bytes_mut())) } {
             Err(e) => Err(e),
 
             Ok(n) => {
                 debug_assert!(n >= 4);
-
-                let mut stream = Cursor::new(&buf[..n]);
+                unsafe {
+                    leaky.advance_mut(n);
+                }
+                let mut stream = Cursor::new(&leaky[..n]);
                 let (ver, cmd, _) = (stream.get_u8(), stream.get_u8(), stream.get_u8());
                 if ver != SOCKS5_VERSION {
                     return Err(Error::new(ErrorKind::Other, "tcp connect invalid socks5 version"));
@@ -412,8 +436,7 @@ impl TcpConnect {
 
                     return Err(Error::new(ErrorKind::Other, "command not supported"));
                 }
-
-                await!(ReadAddress::read_from(&buf[3..n]))
+                await!(ReadAddress::read_from(&leaky[3..n]))
             }
         };
 

@@ -1,8 +1,7 @@
 use super::{
     aead::{AeadDecryptor, AeadEncryptor},
-    cipher::CipherMethod::{self, *},
+    cipher::CipherMethod,
 };
-use byte_string::ByteStr;
 use bytes::BytesMut;
 use log::error;
 use sodiumoxide::crypto::aead::xchacha20poly1305_ietf::*;
@@ -49,7 +48,7 @@ impl SodiumAeadCipher {
 }
 
 impl AeadDecryptor for SodiumAeadCipher {
-    fn decrypt(&mut self, ciphertext: &[u8], plaintext: &mut [u8]) -> io::Result<()> {
+    fn decrypt(&mut self, ciphertext: &mut [u8], plaintext: &mut [u8]) -> io::Result<()> {
         debug_assert_eq!(ciphertext.len() - self.tag_len, plaintext.len());
 
         let rlt = {

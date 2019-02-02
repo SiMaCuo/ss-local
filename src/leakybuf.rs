@@ -42,13 +42,13 @@ pub struct LeakyBuf {
 }
 
 impl LeakyBuf {
-    fn new(chunk_len: usize, capacity: usize) -> Self {
+    pub fn new(chunk_len: usize, capacity: usize) -> Self {
         let (tx, rx) = bounded::<BytesMut>(capacity);
         LeakyBuf { tx, rx, chunk_len }
     }
 
     pub fn get(&self) -> BytesMut {
-        let mut chunk = select! {
+        let chunk = select! {
             recv(self.rx) -> msg => {
                 match msg {
                     Ok(buf) => buf,
@@ -58,10 +58,6 @@ impl LeakyBuf {
 
             default => BytesMut::with_capacity(self.chunk_len),
         };
-
-        unsafe {
-            chunk.set_len(self.chunk_len);
-        }
 
         chunk
     }

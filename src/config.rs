@@ -30,7 +30,7 @@ impl ConfigJson {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct SsConfig {
     local_addr: SocketAddr,
     local_threadpool_size: usize,
@@ -75,8 +75,8 @@ impl SsConfig {
         self.server_addr
     }
 
-    pub fn key_derived_from_pass(&self) -> &[u8] {
-        &self.enc_key[..]
+    pub fn key_derived_from_pass(&self) -> Bytes {
+        self.enc_key.clone()
     }
 
     pub fn method(&self) -> CipherMethod {
