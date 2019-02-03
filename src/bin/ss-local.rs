@@ -1,5 +1,4 @@
 #![feature(async_await, await_macro, futures_api)]
-#![allow(dead_code)]
 use futures::executor;
 use log4rs;
 use shadowsocks::service;

@@ -1,11 +1,16 @@
 use futures::{
     future::{FusedFuture, Future},
     io::{AsyncRead, AsyncWrite},
+    ready,
     task::{LocalWaker, Poll},
     try_ready,
 };
-use std::{boxed::Box, io, marker::Unpin, pin::Pin};
-
+use std::{
+    boxed::Box,
+    io::{self, ErrorKind},
+    marker::Unpin,
+    pin::Pin,
+};
 /// A future which will copy all data from a reader into a writer.
 ///
 /// Created by the [`copy_into`] function, this future will resolve to the number of
@@ -16,6 +21,7 @@ use std::{boxed::Box, io, marker::Unpin, pin::Pin};
 pub struct CopyInto<'a, R: ?Sized, W: ?Sized> {
     reader: &'a mut R,
     read_done: bool,
+    write_done: bool,
     writer: &'a mut W,
     pos: usize,
     cap: usize,
@@ -31,6 +37,7 @@ impl<'a, R: ?Sized, W: ?Sized> CopyInto<'a, R, W> {
         CopyInto {
             reader,
             read_done: false,
+            write_done: false,
             writer,
             amt: 0,
             pos: 0,
@@ -53,30 +60,59 @@ where
             // If our buffer is empty, then we need to read some data to
             // continue.
             if this.pos == this.cap && !this.read_done {
-                let n = try_ready!(this.reader.poll_read(lw, &mut this.buf));
-                if n == 0 {
-                    this.read_done = true;
-                } else {
-                    this.pos = 0;
-                    this.cap = n;
+                match ready!(this.reader.poll_read(lw, &mut this.buf)) {
+                    Ok(n) => {
+                        if n == 0 {
+                            this.read_done = true;
+                        } else {
+                            this.pos = 0;
+                            this.cap = n;
+                        }
+                    }
+
+                    Err(e) => {
+                        if e.kind() == ErrorKind::WouldBlock {
+                            return Poll::Pending;
+                        } else {
+                            this.read_done = true;
+                            this.write_done = this.pos == this.cap;
+                        }
+                    }
                 }
             }
 
             // If our buffer has some data, let's write it out!
             while this.pos < this.cap {
-                let i = try_ready!(this.writer.poll_write(lw, &this.buf[this.pos..this.cap]));
-                if i == 0 {
-                    return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
-                } else {
-                    this.pos += i;
-                    this.amt += i as u64;
+                match ready!(this.writer.poll_write(lw, &this.buf[this.pos..this.cap])) {
+                    Ok(n) => {
+                        if n == 0 {
+                            this.read_done = true;
+                            this.write_done = true;
+                            return Poll::Ready(Ok(this.amt));
+                        } else {
+                            this.pos += n;
+                            this.amt += n as u64;
+                        }
+                    }
+
+                    Err(e) => {
+                        if e.kind() == ErrorKind::WouldBlock {
+                            return Poll::Pending;
+                        } else {
+                            this.read_done = true;
+                            this.write_done = true;
+
+                            return Poll::Ready(Ok(this.amt));
+                        }
+                    }
                 }
             }
 
-            // If we've written al the data and we've seen EOF, flush out the
+            // If we've written all the data and we've seen EOF, flush out the
             // data and finish the transfer.
             // done with the entire transfer.
             if this.pos == this.cap && this.read_done {
+                this.write_done = true;
                 try_ready!(this.writer.poll_flush(lw));
                 return Poll::Ready(Ok(this.amt));
             }
@@ -90,7 +126,7 @@ where
     W: AsyncWrite + ?Sized,
 {
     fn is_terminated(&self) -> bool {
-        self.pos == self.cap && self.read_done
+        self.write_done && self.read_done
     }
 }
 
