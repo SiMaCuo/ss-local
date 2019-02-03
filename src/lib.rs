@@ -2,9 +2,10 @@
 #![feature(box_syntax)]
 #![allow(dead_code)]
 
-mod config;
-pub mod crypto;
-mod err;
-mod leakybuf;
 pub mod service;
+
+mod config;
+mod crypto;
+mod err;
 mod tcprelay;
+// mod leakybuf;
