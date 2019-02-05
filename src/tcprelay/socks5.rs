@@ -1,12 +1,12 @@
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::Buf;
 use futures::io::{AsyncReadExt, AsyncWriteExt};
+use log::debug;
+use romio::tcp::TcpStream;
 use std::{
     fmt::{self, Debug, Formatter},
     io::{self, Cursor, Error, ErrorKind},
     net::{self, IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs},
 };
-
-use romio::tcp::TcpStream;
 
 pub const CMD_HEAD_LEN: usize = 4;
 pub const CMD_IPV4_LEN: usize = CMD_HEAD_LEN + 4 + 2;
@@ -93,19 +93,15 @@ impl HandShakeResponse {
 pub struct Socks5HandShake;
 
 impl Socks5HandShake {
-    pub async fn deal_with<'a, R, W>(r: &'a mut R, w: &'a mut W, leaky: &'a mut BytesMut) -> Option<Error>
+    pub async fn deal_with<'a, R, W>(r: &'a mut R, w: &'a mut W) -> Option<Error>
     where
         R: AsyncReadExt,
         W: AsyncWriteExt,
     {
-        leaky.clear();
+        let mut leaky = [0u8; 16];
         let mut resp = HandShakeResponse::new(s5code::SOCKS5_METHOD_NO_ACCEPT);
-        let err = match unsafe { await!(r.read(leaky.bytes_mut())) } {
+        let err = match unsafe { await!(r.read(&mut leaky[..])) } {
             Ok(read_len) => {
-                unsafe {
-                    leaky.advance_mut(read_len);
-                }
-
                 if read_len < 2 {
                     return Some(Error::new(
                         ErrorKind::Other,
@@ -351,7 +347,7 @@ impl Debug for Address {
 struct ReadAddress;
 
 impl ReadAddress {
-    async fn read_from(buf: &[u8]) -> io::Result<Address> {
+    fn read_from(buf: &[u8]) -> io::Result<Address> {
         let mut stream = Cursor::new(buf);
         let atyp = AddrType::from_u8(stream.get_u8());
         let address = match atyp {
@@ -405,20 +401,16 @@ impl ReadAddress {
 pub struct TcpConnect;
 
 impl TcpConnect {
-    pub async fn deal_with<'a, R, W>(r: &'a mut R, w: &'a mut W, leaky: &'a mut BytesMut) -> io::Result<Address>
+    pub async fn deal_with<'a, R, W>(r: &'a mut R, w: &'a mut W, leaky: &'a mut [u8]) -> io::Result<usize>
     where
         R: AsyncReadExt,
         W: AsyncWriteExt,
     {
-        leaky.clear();
-        let rlt = match unsafe { await!(r.read(leaky.bytes_mut())) } {
+        let rlt = match unsafe { await!(r.read(&mut leaky[..])) } {
             Err(e) => Err(e),
 
             Ok(n) => {
                 debug_assert!(n >= 4);
-                unsafe {
-                    leaky.advance_mut(n);
-                }
                 let mut stream = Cursor::new(&leaky[..n]);
                 let (ver, cmd, _) = (stream.get_u8(), stream.get_u8(), stream.get_u8());
                 if ver != SOCKS5_VERSION {
@@ -436,7 +428,10 @@ impl TcpConnect {
 
                     return Err(Error::new(ErrorKind::Other, "command not supported"));
                 }
-                await!(ReadAddress::read_from(&leaky[3..n]))
+                let address = ReadAddress::read_from(&leaky[3..n]).unwrap();
+                debug!("address: {:?}", address);
+
+                Ok(n)
             }
         };
 

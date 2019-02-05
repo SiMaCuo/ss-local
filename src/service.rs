@@ -6,7 +6,7 @@ use super::{
         socks5,
     },
 };
-use bytes::BytesMut;
+use bytes::Bytes;
 use futures::{executor::ThreadPoolBuilder, future::FutureObj, prelude::*, select, task::Spawn};
 use log::{debug, info};
 use romio::tcp::{TcpListener, TcpStream};
@@ -18,29 +18,59 @@ async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream
     }
 
     let (mut lr, mut lw) = stream.split();
-    let address = {
-        let mut leaky = BytesMut::from(&[0u8; 300][..]);
-        if let Some(e) = await!(socks5::Socks5HandShake::deal_with(&mut lr, &mut lw, &mut leaky)) {
-            debug!("local socks5 handshake failed {}", e);
+    if let Some(e) = await!(socks5::Socks5HandShake::deal_with(&mut lr, &mut lw)) {
+        debug!("local socks5 handshake failed {}", e);
+
+        return;
+    }
+
+    let mut url = [0u8; 320];
+    let url_len = match await!(socks5::TcpConnect::deal_with(&mut lr, &mut lw, &mut url[..])) {
+        Ok(n) => n,
+        Err(e) => {
+            debug!("local socks5 read address failed {}", e);
 
             return;
-        }
-
-        match await!(socks5::TcpConnect::deal_with(&mut lr, &mut lw, &mut leaky)) {
-            Ok(address) => address,
-            Err(e) => {
-                debug!("local socks5 read address failed {}", e);
-
-                return;
-            }
         }
     };
 
-    let remote_stream = match await!(address.connect(&mut lw)) {
-        Ok(stream) => stream,
+    let mut remote_stream = match await!(TcpStream::connect(&shared_conf.ss_server_addr())) {
+        Ok(s) => s,
         Err(e) => {
-            debug!("connect failed {}", e);
+            debug!("connect ss server failed {}", e);
             return;
+        }
+    };
+
+    let local_salt = shared_conf.method().gen_salt();
+    if let Err(e) = await!(remote_stream.write_all(&local_salt[..])) {
+        debug!("write local salt to remote stream failed {}", e);
+
+        return;
+    }
+
+    let remote_salt = {
+        let mut buf = [0u8; 128];
+        match await!(remote_stream.read(&mut buf[..])) {
+            Ok(n) => {
+                if n == shared_conf.method().salt_len() {
+                    Bytes::from(&buf[0..n])
+                } else {
+                    debug!(
+                        "recv remote salt error, need {} bytes, but {} bytes",
+                        shared_conf.method().salt_len(),
+                        n
+                    );
+
+                    return;
+                }
+            }
+
+            Err(e) => {
+                debug!("recve remote salt error {}", e);
+
+                return;
+            }
         }
     };
 
@@ -49,13 +79,20 @@ async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream
         rw,
         shared_conf.method(),
         shared_conf.key_derived_from_pass(),
-        shared_conf.method().gen_salt(),
+        local_salt,
     );
+
+    if let Err(e) = await!(enc_writer.write_all(&url[..url_len])) {
+        debug!("encrypt write url to ss server failed: {}", e);
+
+        return;
+    }
+
     let mut dec_reader = AeadDecryptedReader::new(
         rr,
         shared_conf.method(),
         shared_conf.key_derived_from_pass(),
-        shared_conf.method().gen_salt(),
+        remote_salt,
     );
     let mut l2r = copy_into(&mut lr, &mut enc_writer);
     let mut r2l = copy_into(&mut dec_reader, &mut lw);

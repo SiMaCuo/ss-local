@@ -48,7 +48,7 @@ impl SodiumAeadCipher {
 }
 
 impl AeadDecryptor for SodiumAeadCipher {
-    fn decrypt(&mut self, ciphertext: &mut [u8], plaintext: &mut [u8]) -> io::Result<()> {
+    fn decrypt(&mut self, ciphertext: &[u8], plaintext: &mut [u8]) -> io::Result<()> {
         debug_assert_eq!(ciphertext.len() - self.tag_len, plaintext.len());
 
         let rlt = {
