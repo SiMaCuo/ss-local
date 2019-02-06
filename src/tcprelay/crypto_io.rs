@@ -1,4 +1,4 @@
-use super::buf::BufReader;
+use super::{buf::BufReader, SS_TCP_CHUNK_LEN};
 use crate::crypto::{cipher::CipherMethod, new_aead_decryptor, new_aead_encryptor, BoxAeadDecryptor, BoxAeadEncryptor};
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -11,7 +11,7 @@ use futures::{
     },
     try_ready,
 };
-use std::{cmp, io::ErrorKind};
+use std::io::{ErrorKind, Read};
 
 // ppoe connection mtu seem to be 1492, ip header 20, tcp header 20
 // +--------------+---------------+--------------+------------+
@@ -19,7 +19,6 @@ use std::{cmp, io::ErrorKind};
 // +--------------+---------------+--------------+------------+
 // |      2       |     Fixed     |   Variable   |   Fixed    |
 // +--------------+---------------+--------------+------------+
-pub const SS_TCP_CHUNK_LEN: usize = 1452;
 
 const SS_MAX_PACKET_LEN: usize = 0x3fff;
 
@@ -86,19 +85,24 @@ where
 
         let buf = try_ready!(self.reader.fill_buf(lw, expect_len));
         if buf.len() >= expect_len {
-            if data_len <= buf.len() {
+            let rlt = if data_len <= out.len() {
                 let _ = self.cipher.decrypt(&buf[..expect_len], &mut out[..data_len]);
+
+                Ok(data_len)
             } else {
-                let _ = self.cipher.decrypt(&buf[..expect_len], &mut self.dec[..]);
-                out.copy_from_slice(&self.dec[..buf.len()]);
-                self.cap = data_len;
-                self.pos = out.len();
-            }
+                let _ = self.cipher.decrypt(&buf[..expect_len], &mut self.dec[..data_len]);
+
+                Read::read(&mut self.dec.as_ref(), out).and_then(|n| {
+                    self.cap = data_len;
+                    self.pos = n;
+                    Ok(n)
+                })
+            };
 
             self.reader.consume(expect_len);
             self.amt += expect_len;
 
-            return Ready(Ok(out.len()));
+            return Ready(rlt);
         }
 
         if self.reader.is_eof() {
@@ -135,18 +139,22 @@ where
     R: AsyncRead,
 {
     fn poll_read(&mut self, lw: &LocalWaker, buf: &mut [u8]) -> Poll<Result<usize, io::Error>> {
-        let copy_len = cmp::min(self.cap - self.pos, buf.len());
-        if copy_len > 0 {
-            &mut buf[..copy_len].copy_from_slice(&self.dec[self.pos..self.pos + copy_len]);
-            self.pos += copy_len;
+        let pos = self.cap - self.pos;
+        if pos > 0 {
+            let rlt = Read::read(&mut self.dec.as_ref(), buf).and_then(|n| {
+                self.pos += n;
+                Ok(n)
+            });
 
-            return Ready(Ok(copy_len));
+            if self.cap > self.pos {
+                return Ready(rlt);
+            }
+
+            self.cap = 0;
+            self.pos = 0;
         }
 
-        self.cap = 0;
-        self.pos = 0;
-
-        self.decrypt_data(lw, buf)
+        self.decrypt_data(lw, &mut buf[pos..])
     }
 }
 

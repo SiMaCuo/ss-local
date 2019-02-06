@@ -2,6 +2,7 @@ use super::cipher::CipherMethod::{self, *};
 use ring::aead::{open_in_place, seal_in_place, Aad, Nonce, OpeningKey, SealingKey, AES_256_GCM, CHACHA20_POLY1305};
 
 use super::aead::{AeadDecryptor, AeadEncryptor};
+use crate::tcprelay::SS_TCP_CHUNK_LEN;
 use byte_string::ByteStr;
 use bytes::{BufMut, Bytes, BytesMut};
 use log::error;
@@ -71,6 +72,43 @@ impl RingAeadCipher {
         cryptor
     }
 
+    fn do_decrypt(&mut self, openbuf: &mut [u8], out: &mut [u8]) -> io::Result<()> {
+        debug_assert_eq!(out.len(), openbuf.len() - self.tag_len);
+        let rlt = {
+            if let RingAeadCryptor::Open(ref key, ref nonce) = self.cryptor {
+                match open_in_place(
+                    key,
+                    Nonce::try_assume_unique_for_key(nonce).unwrap(),
+                    Aad::empty(),
+                    0,
+                    openbuf,
+                ) {
+                    Ok(text) => {
+                        out.copy_from_slice(text);
+                        Ok(())
+                    }
+
+                    Err(e) => {
+                        error!(
+                            "AEAD decrypt failed, nonce={:?}, tag={:?}, err={:?}",
+                            ByteStr::new(nonce.as_ref()),
+                            ByteStr::new(&openbuf[..self.tag_len]),
+                            e
+                        );
+
+                        Err(Error::new(ErrorKind::Other, "aead decrypt failed"))
+                    }
+                }
+            } else {
+                unreachable!("decrypt called on a non-open cipher");
+            }
+        };
+
+        self.increse_nonce();
+
+        rlt
+    }
+
     fn increse_nonce(&mut self) {
         increment_le(&mut self.nonce);
 
@@ -86,44 +124,15 @@ impl RingAeadCipher {
 
 impl AeadDecryptor for RingAeadCipher {
     fn decrypt(&mut self, ciphertext: &[u8], plaintext: &mut [u8]) -> io::Result<()> {
-        debug_assert_eq!(plaintext.len(), ciphertext.len() - self.tag_len);
-
-        let mut buf = BytesMut::with_capacity(ciphertext.len());
-        buf.put_slice(ciphertext);
-
-        let rlt = {
-            if let RingAeadCryptor::Open(ref key, ref nonce) = self.cryptor {
-                match open_in_place(
-                    key,
-                    Nonce::try_assume_unique_for_key(nonce).unwrap(),
-                    Aad::empty(),
-                    0,
-                    &mut buf,
-                ) {
-                    Ok(out) => {
-                        plaintext.copy_from_slice(out);
-                        Ok(())
-                    }
-
-                    Err(e) => {
-                        error!(
-                            "AEAD decrypt failed, nonce={:?}, tag={:?}, err={:?}",
-                            ByteStr::new(nonce.as_ref()),
-                            ByteStr::new(&ciphertext[..self.tag_len]),
-                            e
-                        );
-
-                        Err(Error::new(ErrorKind::Other, "aead decrypt failed"))
-                    }
-                }
-            } else {
-                unreachable!("decrypt called on a non-open cipher");
-            }
-        };
-
-        self.increse_nonce();
-
-        rlt
+        if ciphertext.len() <= SS_TCP_CHUNK_LEN {
+            let mut buf = [0u8; SS_TCP_CHUNK_LEN];
+            &mut buf[..ciphertext.len()].copy_from_slice(&ciphertext[..]);
+            self.do_decrypt(&mut buf[..ciphertext.len()], plaintext)
+        } else {
+            let mut buf = BytesMut::with_capacity(ciphertext.len());
+            buf.put_slice(ciphertext);
+            self.do_decrypt(&mut buf, plaintext)
+        }
     }
 }
 
