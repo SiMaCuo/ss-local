@@ -10,6 +10,7 @@ use std::{
     ptr,
 };
 
+#[allow(dead_code)]
 pub struct SodiumAeadCipher {
     method: CipherMethod,
     secret_key: Key,

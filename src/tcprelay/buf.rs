@@ -38,6 +38,7 @@ impl<R: AsyncRead> BufReader<R> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn into_inner(self) -> R {
         self.inner
     }

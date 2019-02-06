@@ -8,14 +8,10 @@ use std::{
     net::{self, IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs},
 };
 
-pub const CMD_HEAD_LEN: usize = 4;
-pub const CMD_IPV4_LEN: usize = CMD_HEAD_LEN + 4 + 2;
-pub const CMD_IPV6_LEN: usize = CMD_HEAD_LEN + 16 + 2;
-pub const METHOD_SELECT_HEAD_LEN: usize = 2;
-pub const SS_MAX_ADDRESSING_LEN: usize = 1 + 1 + 255 + 2;
-
 pub const SOCKS5_VERSION: u8 = 5;
+
 #[cfg_attr(rustfmt, rustfmt_skip)]
+#[allow(dead_code)]
 mod s5code {
     pub const SOCKS5_METHOD_NO_AUTH: u8                 = 0x0;
     pub const SOCKS5_METHOD_GSSAPI: u8                  = 0x1;
@@ -39,6 +35,7 @@ mod s5code {
 }
 
 #[derive(Clone, Debug, Copy)]
+#[allow(dead_code)]
 enum Method {
     NoAuth,
     GssApi,
@@ -46,6 +43,7 @@ enum Method {
     NoAcceptMethod,
 }
 
+#[allow(dead_code)]
 impl Method {
     fn as_u8(self) -> u8 {
         match self {
@@ -148,6 +146,7 @@ enum Command {
     UdpAssociate,
 }
 
+#[allow(dead_code)]
 impl Command {
     fn as_u8(&self) -> u8 {
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -176,6 +175,7 @@ enum AddrType {
     V6,
 }
 
+#[allow(dead_code)]
 impl AddrType {
     fn as_u8(&self) -> u8 {
         #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -198,6 +198,7 @@ impl AddrType {
 }
 
 #[derive(Clone, Debug, Copy)]
+#[allow(dead_code)]
 enum Reply {
     Succeeded,
     GeneralFailure,
@@ -210,6 +211,7 @@ enum Reply {
     AddrtypeNotSupported,
 }
 
+#[allow(dead_code)]
 impl Reply {
     #[cfg_attr(rustfmt, rustfmt_skip)]
     fn as_u8(&self) -> u8 {
@@ -250,14 +252,7 @@ pub enum Address {
 }
 
 impl Address {
-    pub fn len(&self) -> usize {
-        match self {
-            Address::SocketAddr(net::SocketAddr::V4(..)) => 1 + 4 + 2,
-            Address::SocketAddr(net::SocketAddr::V6(..)) => 1 + 16 + 2,
-            Address::DomainName(ref dmname, _) => 1 + 1 + dmname.len() + 2,
-        }
-    }
-
+    #[allow(dead_code)]
     pub async fn connect<'a, W>(&'a self, w: &'a mut W) -> io::Result<TcpStream>
     where
         W: AsyncWriteExt,
