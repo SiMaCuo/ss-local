@@ -1,5 +1,4 @@
-use bytes::{Bytes, BytesMut};
-use openssl::{hash::MessageDigest, pkcs5::bytes_to_key, symm::Cipher};
+use bytes::{Bytes, BytesMut, BufMut};
 use rand::{self, RngCore};
 use ring::{
     aead::{AES_256_GCM, CHACHA20_POLY1305},
@@ -53,12 +52,15 @@ impl CipherMethod {
         }
     }
 
-    pub fn derive_key(password: &[u8]) -> Bytes {
-        let key = bytes_to_key(Cipher::aes_256_gcm(), MessageDigest::md5(), password, None, 1)
-            .unwrap()
-            .key;
-
-        Bytes::from(key)
+    pub fn derive_key(password: &[u8], key_len: usize) -> Bytes {
+        debug_assert!(key_len > 0);
+        let signing_key = SigningKey::new(&SHA1, &[0u8; 0][..]);
+        let mut key = BytesMut::with_capacity(key_len);
+        unsafe {
+            hkdf::extract_and_expand(&signing_key, password, &[0u8;0][..], key.bytes_mut());
+            key.advance_mut(key_len);
+        }
+        key.freeze() 
     }
 
     pub fn gen_salt(&self) -> Bytes {

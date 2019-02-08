@@ -55,7 +55,7 @@ impl SsConfig {
             local_addr,
             local_threadpool_size: json.local_threadpool_size,
             server_addr,
-            enc_key: CipherMethod::derive_key(json.password.as_bytes()),
+            enc_key: CipherMethod::derive_key(json.password.as_bytes(), 32),
             method: json.method.parse().unwrap(),
             keeplive,
         };
