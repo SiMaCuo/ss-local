@@ -49,15 +49,17 @@ impl SodiumAeadCipher {
 }
 
 impl AeadDecryptor for SodiumAeadCipher {
-    fn decrypt(&mut self, ciphertext: &[u8], plaintext: &mut [u8]) -> io::Result<()> {
-        debug_assert_eq!(ciphertext.len() - self.tag_len, plaintext.len());
-
+    fn decrypt(&mut self, in_out: &mut [u8]) -> io::Result<()> {
         let rlt = {
-            if let Ok(v) = open(ciphertext, None, &self.nonce, &self.secret_key) {
-                debug_assert_eq!(plaintext.len(), v.len());
-
-                plaintext.copy_from_slice(&v);
-
+            let mid = in_out.len() - self.tag_len;
+            let (c, tag) = in_out.split_at_mut(mid);
+            if let Ok(_) = open_detached(
+                c,
+                None,
+                Tag::from_slice(tag).as_ref().unwrap(),
+                &self.nonce,
+                &self.secret_key,
+            ) {
                 Ok(())
             } else {
                 error!(
@@ -80,7 +82,7 @@ impl AeadEncryptor for SodiumAeadCipher {
         let plaintext_len = in_out.len() - self.tag_len;
         let tag = seal_detached(&mut in_out[..plaintext_len], None, &self.nonce, &self.secret_key);
 
-        &mut in_out[plaintext_len..plaintext_len+self.tag_len].copy_from_slice(&tag[..]);
+        &mut in_out[plaintext_len..plaintext_len + self.tag_len].copy_from_slice(&tag[..]);
         self.increse_nonce();
 
         Ok(())
