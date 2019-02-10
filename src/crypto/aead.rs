@@ -5,5 +5,5 @@ pub trait AeadDecryptor {
 }
 
 pub trait AeadEncryptor {
-    fn encrypt(&mut self, plaintext: &[u8], cipertext: &mut [u8]) -> io::Result<()>;
+    fn encrypt(&mut self, in_out: &mut [u8]) -> io::Result<()>;
 }

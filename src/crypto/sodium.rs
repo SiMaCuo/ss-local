@@ -76,13 +76,11 @@ impl AeadDecryptor for SodiumAeadCipher {
 }
 
 impl AeadEncryptor for SodiumAeadCipher {
-    fn encrypt(&mut self, plaintext: &[u8], ciphertext: &mut [u8]) -> io::Result<()> {
-        debug_assert_eq!(self.tag_len + plaintext.len(), ciphertext.len());
+    fn encrypt(&mut self, in_out: &mut [u8]) -> io::Result<()> {
+        let plaintext_len = in_out.len() - self.tag_len;
+        let tag = seal_detached(&mut in_out[..plaintext_len], None, &self.nonce, &self.secret_key);
 
-        let v = seal(plaintext, None, &self.nonce, &self.secret_key);
-        debug_assert_eq!(v.len(), ciphertext.len());
-
-        ciphertext.copy_from_slice(&v);
+        &mut in_out[plaintext_len..plaintext_len+self.tag_len].copy_from_slice(&tag[..]);
         self.increse_nonce();
 
         Ok(())

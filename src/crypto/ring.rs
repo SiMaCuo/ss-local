@@ -137,22 +137,14 @@ impl AeadDecryptor for RingAeadCipher {
 }
 
 impl AeadEncryptor for RingAeadCipher {
-    fn encrypt(&mut self, plaintext: &[u8], ciphertext: &mut [u8]) -> io::Result<()> {
-        debug_assert_eq!(plaintext.len() + self.tag_len, ciphertext.len());
-
-        let mut buf = BytesMut::with_capacity(ciphertext.len());
-        buf.put_slice(plaintext);
-        unsafe {
-            buf.set_len(ciphertext.len());
-        }
-
+    fn encrypt(&mut self, in_out: &mut [u8]) -> io::Result<()> {
         let rlt = {
             if let RingAeadCryptor::Seal(ref key, ref nonce) = self.cryptor {
                 match seal_in_place(
                     key,
                     Nonce::try_assume_unique_for_key(nonce).unwrap(),
                     Aad::empty(),
-                    &mut buf,
+                    in_out,
                     self.tag_len,
                 ) {
                     Ok(_) => Ok(()),

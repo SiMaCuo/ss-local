@@ -198,12 +198,12 @@ where
 
         let mut enc_data = [0u8; SS_TCP_CHUNK_LEN];
         let enc_length_end = 2 + self.tag_len;
-        let enc_cap = enc_length_end + buf.len() + self.tag_len;
-        let mut length = [0u8; 2];
-        BigEndian::write_u16(&mut length, buf.len() as u16);
-        let _ = self.cipher.encrypt(&length, &mut enc_data[..enc_length_end]);
-        let _ = self.cipher.encrypt(buf, &mut enc_data[enc_length_end..enc_cap]);
+        BigEndian::write_u16(&mut enc_data[..2], buf.len() as u16);
+        let _ = self.cipher.encrypt(&mut enc_data[..enc_length_end]);
 
+        let enc_cap = enc_length_end + buf.len() + self.tag_len;
+        &mut enc_data[enc_length_end..enc_length_end+buf.len()].copy_from_slice(buf);
+        let _ = self.cipher.encrypt(&mut enc_data[enc_length_end..enc_cap]);
         let n = try_ready!(self.writer.poll_write(lw, &enc_data[..enc_cap]));
         if n != enc_cap {
             debug_assert!(self.remaining.len() == 0);
