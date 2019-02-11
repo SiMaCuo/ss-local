@@ -12,14 +12,12 @@ use std::{
 };
 
 enum RingAeadCryptor {
-    Seal(SealingKey, Bytes),
-    Open(OpeningKey, Bytes),
+    Seal(SealingKey),
+    Open(OpeningKey),
 }
 
 pub struct RingAeadCipher {
     cryptor: RingAeadCryptor,
-    method: CipherMethod,
-    secret_key: Bytes,
     nonce: BytesMut,
     tag_len: usize,
 }
@@ -34,34 +32,31 @@ impl RingAeadCipher {
         }
 
         let secret_key = method.make_secret_key(key_derive_from_pass, salt);
-        let cryptor = RingAeadCipher::new_cryptor(method, &secret_key, &nonce, is_seal);
+        let cryptor = RingAeadCipher::new_cryptor(method, &secret_key, is_seal);
         let tag_len = method.tag_len();
 
         RingAeadCipher {
             cryptor,
-            method,
-            secret_key,
             nonce,
             tag_len,
         }
     }
 
-    fn new_cryptor(m: CipherMethod, key: &Bytes, in_nonce: &[u8], is_seal: bool) -> RingAeadCryptor {
-        let nonce = Bytes::from(in_nonce);
+    fn new_cryptor(m: CipherMethod, key: &Bytes, is_seal: bool) -> RingAeadCryptor {
         let cryptor = match m {
             Aes256Gcm => {
                 if is_seal {
-                    RingAeadCryptor::Seal(SealingKey::new(&AES_256_GCM, &key).unwrap(), nonce)
+                    RingAeadCryptor::Seal(SealingKey::new(&AES_256_GCM, &key).unwrap())
                 } else {
-                    RingAeadCryptor::Open(OpeningKey::new(&AES_256_GCM, &key).unwrap(), nonce)
+                    RingAeadCryptor::Open(OpeningKey::new(&AES_256_GCM, &key).unwrap())
                 }
             }
 
             Chacha20IetfPoly1305 => {
                 if is_seal {
-                    RingAeadCryptor::Seal(SealingKey::new(&CHACHA20_POLY1305, &key).unwrap(), nonce)
+                    RingAeadCryptor::Seal(SealingKey::new(&CHACHA20_POLY1305, &key).unwrap())
                 } else {
-                    RingAeadCryptor::Open(OpeningKey::new(&CHACHA20_POLY1305, &key).unwrap(), nonce)
+                    RingAeadCryptor::Open(OpeningKey::new(&CHACHA20_POLY1305, &key).unwrap())
                 }
             }
 
@@ -73,24 +68,16 @@ impl RingAeadCipher {
 
     fn increse_nonce(&mut self) {
         increment_le(&mut self.nonce);
-
-        let is_seal = match self.cryptor {
-            RingAeadCryptor::Seal(..) => true,
-            RingAeadCryptor::Open(..) => false,
-        };
-
-        let cryptor = RingAeadCipher::new_cryptor(self.method, &self.secret_key, &self.nonce, is_seal);
-        std::mem::replace(&mut self.cryptor, cryptor);
     }
 }
 
 impl AeadDecryptor for RingAeadCipher {
     fn decrypt(&mut self, in_out: &mut [u8]) -> io::Result<()> {
         let rlt = {
-            if let RingAeadCryptor::Open(ref key, ref nonce) = self.cryptor {
+            if let RingAeadCryptor::Open(ref key) = self.cryptor {
                 match open_in_place(
                     key,
-                    Nonce::try_assume_unique_for_key(nonce).unwrap(),
+                    Nonce::try_assume_unique_for_key(&self.nonce).unwrap(),
                     Aad::empty(),
                     0,
                     in_out,
@@ -102,7 +89,7 @@ impl AeadDecryptor for RingAeadCipher {
                     Err(e) => {
                         error!(
                             "AEAD decrypt failed, nonce={:?}, tag={:?}, err={:?}",
-                            ByteStr::new(nonce.as_ref()),
+                            ByteStr::new(self.nonce.as_ref()),
                             ByteStr::new(&in_out[..self.tag_len]),
                             e
                         );
@@ -124,10 +111,10 @@ impl AeadDecryptor for RingAeadCipher {
 impl AeadEncryptor for RingAeadCipher {
     fn encrypt(&mut self, in_out: &mut [u8]) -> io::Result<()> {
         let rlt = {
-            if let RingAeadCryptor::Seal(ref key, ref nonce) = self.cryptor {
+            if let RingAeadCryptor::Seal(ref key) = self.cryptor {
                 match seal_in_place(
                     key,
-                    Nonce::try_assume_unique_for_key(nonce).unwrap(),
+                    Nonce::try_assume_unique_for_key(&self.nonce).unwrap(),
                     Aad::empty(),
                     in_out,
                     self.tag_len,
