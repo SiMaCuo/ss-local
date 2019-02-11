@@ -1,6 +1,5 @@
 use bytes::Buf;
 use futures::io::{AsyncReadExt, AsyncWriteExt};
-use log::debug;
 use romio::tcp::TcpStream;
 use std::{
     fmt::{self, Debug, Formatter},
@@ -12,7 +11,7 @@ pub const SOCKS5_VERSION: u8 = 5;
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
 #[allow(dead_code)]
-mod s5code {
+pub mod s5code {
     pub const SOCKS5_METHOD_NO_AUTH: u8                 = 0x0;
     pub const SOCKS5_METHOD_GSSAPI: u8                  = 0x1;
     pub const SOCKS5_METHOD_NAME_PASSWORD: u8           = 0x3;
@@ -199,7 +198,7 @@ impl AddrType {
 
 #[derive(Clone, Debug, Copy)]
 #[allow(dead_code)]
-enum Reply {
+pub enum Reply {
     Succeeded,
     GeneralFailure,
     ConnectDisallowed,
@@ -214,7 +213,7 @@ enum Reply {
 #[allow(dead_code)]
 impl Reply {
     #[cfg_attr(rustfmt, rustfmt_skip)]
-    fn as_u8(&self) -> u8 {
+    pub fn as_u8(&self) -> u8 {
         match self {
             Reply::Succeeded                => s5code::SOCKS5_REPLY_SUCCEEDED,
             Reply::GeneralFailure           => s5code::SOCKS5_REPLY_GENERAL_FAILURE,
@@ -229,7 +228,7 @@ impl Reply {
     }
 
     #[cfg_attr(rustfmt, rustfmt_skip)]
-    fn from_u8(code: u8) -> Option<Reply> {
+    pub fn from_u8(code: u8) -> Option<Reply> {
         match code {
             s5code::SOCKS5_REPLY_SUCCEEDED              => Some(Reply::Succeeded),
             s5code::SOCKS5_REPLY_GENERAL_FAILURE        => Some(Reply::GeneralFailure),
@@ -339,10 +338,10 @@ impl Debug for Address {
     }
 }
 
-struct ReadAddress;
+pub struct ReadAddress;
 
 impl ReadAddress {
-    fn read_from(buf: &[u8]) -> io::Result<Address> {
+    pub fn read_from(buf: &[u8]) -> io::Result<Address> {
         let mut stream = Cursor::new(buf);
         let atyp = AddrType::from_u8(stream.get_u8());
         let address = match atyp {
@@ -423,8 +422,6 @@ impl TcpConnect {
 
                     return Err(Error::new(ErrorKind::Other, "command not supported"));
                 }
-                let address = ReadAddress::read_from(&leaky[3..n]).unwrap();
-                debug!("address: {:?}", address);
 
                 Ok(n)
             }

@@ -5,6 +5,7 @@ use futures::{
     task::{LocalWaker, Poll},
     try_ready,
 };
+use log::debug;
 use std::{
     boxed::Box,
     io::{self, ErrorKind},
@@ -27,13 +28,14 @@ pub struct CopyInto<'a, R: ?Sized, W: ?Sized> {
     cap: usize,
     amt: u64,
     buf: Box<[u8]>,
+    name: String,
 }
 
 // No projections of Pin<&mut CopyInto> into Pin<&mut Field> are ever done.
 impl<R: ?Sized, W: ?Sized> Unpin for CopyInto<'_, R, W> {}
 
 impl<'a, R: ?Sized, W: ?Sized> CopyInto<'a, R, W> {
-    pub fn new(reader: &'a mut R, writer: &'a mut W) -> Self {
+    pub fn new(reader: &'a mut R, writer: &'a mut W, name: String) -> Self {
         CopyInto {
             reader,
             read_done: false,
@@ -43,6 +45,7 @@ impl<'a, R: ?Sized, W: ?Sized> CopyInto<'a, R, W> {
             pos: 0,
             cap: 0,
             buf: Box::new([0; 2048]),
+            name,
         }
     }
 }
@@ -62,6 +65,7 @@ where
             if this.pos == this.cap && !this.read_done {
                 match ready!(this.reader.poll_read(lw, &mut this.buf)) {
                     Ok(n) => {
+                        debug!("{} read {} byte", this.name, n);
                         if n == 0 {
                             this.read_done = true;
                         } else {
@@ -71,6 +75,7 @@ where
                     }
 
                     Err(e) => {
+                        debug!("{} read err {}", this.name, e);
                         if e.kind() == ErrorKind::WouldBlock {
                             return Poll::Pending;
                         } else {
@@ -85,6 +90,7 @@ where
             while this.pos < this.cap {
                 match ready!(this.writer.poll_write(lw, &this.buf[this.pos..this.cap])) {
                     Ok(n) => {
+                        debug!("{} write {} byte", this.name, n);
                         if n == 0 {
                             this.read_done = true;
                             this.write_done = true;
@@ -96,6 +102,7 @@ where
                     }
 
                     Err(e) => {
+                        debug!("{} write err {}", this.name, e);
                         if e.kind() == ErrorKind::WouldBlock {
                             return Poll::Pending;
                         } else {
@@ -112,6 +119,7 @@ where
             // data and finish the transfer.
             // done with the entire transfer.
             if this.pos == this.cap && this.read_done {
+                debug!("{} done!!", this.name);
                 this.write_done = true;
                 try_ready!(this.writer.poll_flush(lw));
                 return Poll::Ready(Ok(this.amt));
@@ -130,10 +138,10 @@ where
     }
 }
 
-pub fn copy_into<'a, R, W>(r: &'a mut R, w: &'a mut W) -> CopyInto<'a, R, W>
+pub fn copy_into<'a, R, W>(r: &'a mut R, w: &'a mut W, name: String) -> CopyInto<'a, R, W>
 where
     R: AsyncRead + ?Sized,
     W: AsyncWrite + ?Sized,
 {
-    CopyInto::new(r, w)
+    CopyInto::new(r, w, name)
 }

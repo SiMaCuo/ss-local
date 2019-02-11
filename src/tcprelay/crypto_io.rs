@@ -11,15 +11,14 @@ use futures::{
     },
     try_ready,
 };
-use std::io::{ErrorKind, Read};
+use log::debug;
+use std::io::ErrorKind;
 
-// ppoe connection mtu seem to be 1492, ip header 20, tcp header 20
 // +--------------+---------------+--------------+------------+
 // |  *DataLen*   |  DataLen_TAG  |    *Data*    |  Data_TAG  |
 // +--------------+---------------+--------------+------------+
 // |      2       |     Fixed     |   Variable   |   Fixed    |
 // +--------------+---------------+--------------+------------+
-
 enum ReadingStep {
     Length,
     Data(usize),
@@ -46,7 +45,10 @@ where
 {
     pub fn new(r: R, method: CipherMethod, key_derive_from_pass: Bytes, salt: Bytes) -> Self {
         let tag_len = method.tag_len();
-        let v = Vec::with_capacity(2+tag_len);
+        let mut v = Vec::with_capacity(2 + tag_len);
+        unsafe {
+            v.set_len(2 + tag_len);
+        }
         AeadDecryptedReader {
             reader: BufReader::new(r),
             read_step: ReadingStep::Length,
@@ -62,10 +64,11 @@ where
 
     fn read_length(&mut self, lw: &LocalWaker) -> Poll<Result<usize, io::Error>> {
         let expect_len = 2 + self.tag_len;
-        let buf = try_ready!(self.reader.fill_buf(lw, expect_len));
-
-        if buf.len() >= expect_len {
-            let _ = self.cipher.decrypt(&mut self.len[..]);
+        let ciphertext = try_ready!(self.reader.fill_buf(lw, expect_len));
+        if ciphertext.len() >= expect_len {
+            &mut self.len[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
+            debug!("leng {:?}", &self.len[..expect_len]);
+            let _ = self.cipher.decrypt(&mut self.len[..expect_len]);
             self.reader.consume(expect_len);
             self.amt += expect_len;
 
@@ -83,20 +86,21 @@ where
         let expect_len = data_len + self.tag_len;
         debug_assert!(expect_len <= SS_TCP_CHUNK_LEN);
 
-        let buf = try_ready!(self.reader.fill_buf(lw, expect_len));
-        if buf.len() >= expect_len {
-            let rlt = if data_len <= out.len() {
-                let _ = self.cipher.decrypt(&mut out[..data_len]);
+        let ciphertext = try_ready!(self.reader.fill_buf(lw, expect_len));
+        if ciphertext.len() >= expect_len {
+            let len = out.len();
+            let rlt = if len >= expect_len {
+                &mut out[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
+                let _ = self.cipher.decrypt(&mut out[..expect_len]);
 
                 Ok(data_len)
             } else {
-                let _ = self.cipher.decrypt(&mut self.dec[..data_len]);
-
-                Read::read(&mut self.dec.as_ref(), out).and_then(|n| {
-                    self.cap = data_len;
-                    self.pos = n;
-                    Ok(n)
-                })
+                &mut self.dec[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
+                let _ = self.cipher.decrypt(&mut self.dec[..expect_len]);
+                self.cap = data_len;
+                &mut out[..].copy_from_slice(&self.dec[..len]);
+                self.pos = len;
+                Ok(len)
             };
 
             self.reader.consume(expect_len);
@@ -118,6 +122,7 @@ where
             match self.read_step {
                 ReadingStep::Length => {
                     let data_len = try_ready!(self.read_length(lw));
+                    debug!("read_length {}", data_len);
                     self.read_step = ReadingStep::Data(data_len);
                 }
 
@@ -139,31 +144,32 @@ where
     R: AsyncRead,
 {
     fn poll_read(&mut self, lw: &LocalWaker, buf: &mut [u8]) -> Poll<Result<usize, io::Error>> {
-        let pos = self.cap - self.pos;
+        debug_assert!(buf.len() > 0);
         let mut total_read = 0usize;
-        if pos > 0 {
-            let _ = Read::read(&mut self.dec.as_ref(), buf).and_then(|n| {
-                self.pos += n;
-                total_read += n;
-                Ok(())
-            });
+        if self.cap - self.pos > 0 {
+            let len = std::cmp::min(self.cap - self.pos, buf.len());
+            &mut buf[..len].copy_from_slice(&self.dec[self.pos..self.pos + len]);
+            self.pos += len;
+            total_read += len;
 
-            if self.cap > self.pos {
-                return Ready(Ok(total_read));
+            if self.pos >= self.cap {
+                self.pos = 0;
+                self.cap = 0;
             }
 
-            self.cap = 0;
-            self.pos = 0;
+            if len == buf.len() {
+                return Ready(Ok(total_read));
+            }
         }
 
-        match self.decrypt_data(lw, &mut buf[pos..]) {
+        match self.decrypt_data(lw, &mut buf[total_read..]) {
             Pending => {
                 if total_read > 0 {
                     Ready(Ok(total_read))
                 } else {
                     Pending
                 }
-            },
+            }
 
             Ready(Err(e)) => {
                 if total_read > 0 {
@@ -171,11 +177,9 @@ where
                 } else {
                     Ready(Err(e))
                 }
-            },
-
-            Ready(Ok(n)) => {
-                Ready(Ok(total_read+n))
             }
+
+            Ready(Ok(n)) => Ready(Ok(total_read + n)),
         }
     }
 }
@@ -224,7 +228,7 @@ where
         let _ = self.cipher.encrypt(&mut enc_data[..enc_length_end]);
 
         let enc_cap = enc_length_end + buf.len() + self.tag_len;
-        &mut enc_data[enc_length_end..enc_length_end+buf.len()].copy_from_slice(buf);
+        &mut enc_data[enc_length_end..enc_length_end + buf.len()].copy_from_slice(buf);
         let _ = self.cipher.encrypt(&mut enc_data[enc_length_end..enc_cap]);
         let n = try_ready!(self.writer.poll_write(lw, &enc_data[..enc_cap]));
         if n != enc_cap {
