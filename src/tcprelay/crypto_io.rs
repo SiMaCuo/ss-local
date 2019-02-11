@@ -67,7 +67,6 @@ where
         let ciphertext = try_ready!(self.reader.fill_buf(lw, expect_len));
         if ciphertext.len() >= expect_len {
             &mut self.len[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
-            debug!("leng {:?}", &self.len[..expect_len]);
             let _ = self.cipher.decrypt(&mut self.len[..expect_len]);
             self.reader.consume(expect_len);
             self.amt += expect_len;
@@ -122,7 +121,6 @@ where
             match self.read_step {
                 ReadingStep::Length => {
                     let data_len = try_ready!(self.read_length(lw));
-                    debug!("read_length {}", data_len);
                     self.read_step = ReadingStep::Data(data_len);
                 }
 

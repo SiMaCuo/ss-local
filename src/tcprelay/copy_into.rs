@@ -45,6 +45,7 @@ impl<'a, R: ?Sized, W: ?Sized> CopyInto<'a, R, W> {
             pos: 0,
             cap: 0,
             buf: Box::new([0; 2048]),
+            #[allow(dead_code)]
             name,
         }
     }
@@ -65,7 +66,6 @@ where
             if this.pos == this.cap && !this.read_done {
                 match ready!(this.reader.poll_read(lw, &mut this.buf)) {
                     Ok(n) => {
-                        debug!("{} read {} byte", this.name, n);
                         if n == 0 {
                             this.read_done = true;
                         } else {
@@ -75,7 +75,6 @@ where
                     }
 
                     Err(e) => {
-                        debug!("{} read err {}", this.name, e);
                         if e.kind() == ErrorKind::WouldBlock {
                             return Poll::Pending;
                         } else {
@@ -90,7 +89,6 @@ where
             while this.pos < this.cap {
                 match ready!(this.writer.poll_write(lw, &this.buf[this.pos..this.cap])) {
                     Ok(n) => {
-                        debug!("{} write {} byte", this.name, n);
                         if n == 0 {
                             this.read_done = true;
                             this.write_done = true;
@@ -102,7 +100,6 @@ where
                     }
 
                     Err(e) => {
-                        debug!("{} write err {}", this.name, e);
                         if e.kind() == ErrorKind::WouldBlock {
                             return Poll::Pending;
                         } else {
@@ -119,7 +116,6 @@ where
             // data and finish the transfer.
             // done with the entire transfer.
             if this.pos == this.cap && this.read_done {
-                debug!("{} done!!", this.name);
                 this.write_done = true;
                 try_ready!(this.writer.poll_flush(lw));
                 return Poll::Ready(Ok(this.amt));
