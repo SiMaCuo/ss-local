@@ -11,7 +11,6 @@ use futures::{
     },
     try_ready,
 };
-use log::debug;
 use std::io::ErrorKind;
 
 // +--------------+---------------+--------------+------------+
@@ -143,42 +142,21 @@ where
 {
     fn poll_read(&mut self, lw: &LocalWaker, buf: &mut [u8]) -> Poll<Result<usize, io::Error>> {
         debug_assert!(buf.len() > 0);
-        let mut total_read = 0usize;
+
         if self.cap - self.pos > 0 {
             let len = std::cmp::min(self.cap - self.pos, buf.len());
             &mut buf[..len].copy_from_slice(&self.dec[self.pos..self.pos + len]);
             self.pos += len;
-            total_read += len;
 
             if self.pos >= self.cap {
                 self.pos = 0;
                 self.cap = 0;
             }
 
-            if len == buf.len() {
-                return Ready(Ok(total_read));
-            }
+            return Ready(Ok(len));
         }
 
-        match self.decrypt_data(lw, &mut buf[total_read..]) {
-            Pending => {
-                if total_read > 0 {
-                    Ready(Ok(total_read))
-                } else {
-                    Pending
-                }
-            }
-
-            Ready(Err(e)) => {
-                if total_read > 0 {
-                    Ready(Ok(total_read))
-                } else {
-                    Ready(Err(e))
-                }
-            }
-
-            Ready(Ok(n)) => Ready(Ok(total_read + n)),
-        }
+        self.decrypt_data(lw, buf)
     }
 }
 

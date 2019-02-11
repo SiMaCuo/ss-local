@@ -5,7 +5,6 @@ use futures::{
     task::{LocalWaker, Poll},
     try_ready,
 };
-use log::debug;
 use std::{
     boxed::Box,
     io::{self, ErrorKind},
