@@ -11,6 +11,7 @@ use std::{
     marker::Unpin,
     pin::Pin,
 };
+use super::buf::DEFAULT_BUF_SIZE;
 /// A future which will copy all data from a reader into a writer.
 ///
 /// Created by the [`copy_into`] function, this future will resolve to the number of
@@ -43,7 +44,7 @@ impl<'a, R: ?Sized, W: ?Sized> CopyInto<'a, R, W> {
             amt: 0,
             pos: 0,
             cap: 0,
-            buf: Box::new([0; 2048]),
+            buf: Box::new([0; DEFAULT_BUF_SIZE]),
             #[allow(dead_code)]
             name,
         }
@@ -85,7 +86,7 @@ where
             }
 
             // If our buffer has some data, let's write it out!
-            while this.pos < this.cap {
+            while this.pos < this.cap && !this.write_done {
                 match ready!(this.writer.poll_write(lw, &this.buf[this.pos..this.cap])) {
                     Ok(n) => {
                         if n == 0 {

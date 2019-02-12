@@ -36,6 +36,7 @@ where
     cap: usize,
     amt: usize,
     tag_len: usize,
+    poll: Poll<Result<usize, io::Error>>,
 }
 
 impl<R> AeadDecryptedReader<R>
@@ -58,6 +59,7 @@ where
             cap: 0,
             amt: 0,
             tag_len,
+            poll: Ready(Ok(0)),
         }
     }
 
@@ -76,7 +78,7 @@ where
         if self.reader.is_eof() {
             return Ready(Err(ErrorKind::UnexpectedEof.into()));
         }
-
+        
         Pending
     }
 
@@ -86,8 +88,8 @@ where
 
         let ciphertext = try_ready!(self.reader.fill_buf(lw, expect_len));
         if ciphertext.len() >= expect_len {
-            let len = out.len();
-            let rlt = if len >= expect_len {
+            let out_len = out.len();
+            let rlt = if out_len >= expect_len {
                 &mut out[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
                 let _ = self.cipher.decrypt(&mut out[..expect_len]);
 
@@ -95,10 +97,15 @@ where
             } else {
                 &mut self.dec[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
                 let _ = self.cipher.decrypt(&mut self.dec[..expect_len]);
-                self.cap = data_len;
-                &mut out[..].copy_from_slice(&self.dec[..len]);
-                self.pos = len;
-                Ok(len)
+                if out_len >= data_len {
+                    &mut out[..data_len].copy_from_slice(&self.dec[..data_len]);
+                    Ok(data_len)
+                } else {
+                    &mut out[..].copy_from_slice(&self.dec[..out_len]);
+                    self.cap = data_len;
+                    self.pos = out_len;
+                    Ok(out_len)
+                }
             };
 
             self.reader.consume(expect_len);
@@ -115,19 +122,48 @@ where
     }
 
     fn decrypt_data(&mut self, lw: &LocalWaker, buf: &mut [u8]) -> Poll<Result<usize, io::Error>> {
-        let mut copy_len: usize = 0;
-        while !self.reader.is_eof() {
+        match self.poll {
+            Ready(Ok(_)) => {}
+
+            Pending | Ready(Err(_)) => {
+                return std::mem::replace(&mut self.poll, Ready(Ok(0)));
+            }
+        }
+
+        let (mut copy_len, cap) = (0usize, buf.len());
+        while copy_len < cap {
             match self.read_step {
                 ReadingStep::Length => {
-                    let data_len = try_ready!(self.read_length(lw));
-                    self.read_step = ReadingStep::Data(data_len);
+                    let poll = self.read_length(lw);
+                    match poll {
+                        Ready(Ok(data_len)) => {
+                            self.read_step = ReadingStep::Data(data_len);
+                        }
+
+                        Ready(Err(_)) | Pending if copy_len > 0 => {
+                            self.poll = poll;
+                            break;
+                        }
+
+                        _ => return poll,
+                    }
                 }
 
                 ReadingStep::Data(data_len) => {
-                    copy_len = try_ready!(self.read_data(lw, data_len, &mut buf[..]));
-                    self.read_step = ReadingStep::Length;
+                    let poll = self.read_data(lw, data_len, &mut buf[copy_len..]);
+                    match poll {
+                        Ready(Ok(n)) => {
+                            copy_len += n;
+                            self.read_step = ReadingStep::Length;
+                        }
 
-                    break;
+                        Ready(Err(_)) | Pending if copy_len > 0 => {
+                            self.poll = poll;
+                            break;
+                        }
+
+                        _ => return poll,
+                    }
                 }
             }
         }

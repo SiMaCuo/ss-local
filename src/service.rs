@@ -159,9 +159,6 @@ async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream
     let host_name = format!("{:?}", address);
     let mut l2r = copy_into(&mut lr, &mut enc_writer, format!("-> {}", host_name));
     let mut r2l = copy_into(&mut dec_reader, &mut lw, format!("<- {}", host_name));
-    // let (mut rr, mut rw) = remote_stream.split();
-    // let mut l2r = copy_into(&mut lr, &mut rw);
-    // let mut r2l = copy_into(&mut rr, &mut lw);
     loop {
         select! {
             _ = l2r => {},
