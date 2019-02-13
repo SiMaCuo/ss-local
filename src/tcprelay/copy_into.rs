@@ -1,6 +1,7 @@
+use super::buf::DEFAULT_BUF_SIZE;
 use futures::{
     future::{FusedFuture, Future},
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt, Close},
     ready,
     task::{LocalWaker, Poll},
     try_ready,
@@ -11,7 +12,6 @@ use std::{
     marker::Unpin,
     pin::Pin,
 };
-use super::buf::DEFAULT_BUF_SIZE;
 /// A future which will copy all data from a reader into a writer.
 ///
 /// Created by the [`copy_into`] function, this future will resolve to the number of
@@ -34,7 +34,12 @@ pub struct CopyInto<'a, R: ?Sized, W: ?Sized> {
 // No projections of Pin<&mut CopyInto> into Pin<&mut Field> are ever done.
 impl<R: ?Sized, W: ?Sized> Unpin for CopyInto<'_, R, W> {}
 
-impl<'a, R: ?Sized, W: ?Sized> CopyInto<'a, R, W> {
+// impl<'a, R: ?Sized, W: ?Sized> CopyInto<'a, R, W> {
+impl<'a, R, W> CopyInto<'a, R, W>
+where
+    R: AsyncRead + ?Sized,
+    W: AsyncWrite + ?Sized,
+{
     pub fn new(reader: &'a mut R, writer: &'a mut W, name: String) -> Self {
         CopyInto {
             reader,
@@ -48,6 +53,11 @@ impl<'a, R: ?Sized, W: ?Sized> CopyInto<'a, R, W> {
             #[allow(dead_code)]
             name,
         }
+    }
+    
+    pub fn close(&mut self) -> Close<'_, W> {
+        log::debug!("{} close", self.name);
+        self.writer.close()
     }
 }
 
@@ -67,6 +77,7 @@ where
                 match ready!(this.reader.poll_read(lw, &mut this.buf)) {
                     Ok(n) => {
                         if n == 0 {
+                            log::debug!("{} read zero bytes", this.name);
                             this.read_done = true;
                         } else {
                             this.pos = 0;
@@ -78,6 +89,7 @@ where
                         if e.kind() == ErrorKind::WouldBlock {
                             return Poll::Pending;
                         } else {
+                            log::debug!("{} read err: {}", this.name, e);
                             this.read_done = true;
                             this.write_done = this.pos == this.cap;
                         }
@@ -90,6 +102,7 @@ where
                 match ready!(this.writer.poll_write(lw, &this.buf[this.pos..this.cap])) {
                     Ok(n) => {
                         if n == 0 {
+                            log::debug!("{} write zero bytes", this.name);
                             this.read_done = true;
                             this.write_done = true;
                             return Poll::Ready(Ok(this.amt));
@@ -105,7 +118,7 @@ where
                         } else {
                             this.read_done = true;
                             this.write_done = true;
-
+                            log::debug!("{} write error: {}", this.name, e);
                             return Poll::Ready(Ok(this.amt));
                         }
                     }

@@ -17,7 +17,7 @@ struct ConfigJson {
     server_port: u16,
     password: String,
     method: String,
-    timeout: u64,
+    keepalive: u64,
 }
 
 impl ConfigJson {
@@ -45,10 +45,10 @@ impl SsConfig {
         let json = ConfigJson::new(path)?;
         let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), json.local_port);
         let server_addr = format!("{}:{}", json.server_ip, json.server_port).parse().unwrap();
-        let keeplive = if json.timeout == 0 {
+        let keeplive = if json.keepalive == 0 {
             None
         } else {
-            Some(Duration::from_secs(json.timeout))
+            Some(Duration::from_secs(json.keepalive))
         };
 
         let s = SsConfig {
@@ -83,7 +83,7 @@ impl SsConfig {
         self.method
     }
 
-    pub fn timeout(&self) -> Option<Duration> {
+    pub fn keepalive(&self) -> Option<Duration> {
         self.keeplive
     }
 }

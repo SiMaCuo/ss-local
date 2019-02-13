@@ -97,10 +97,6 @@ async fn exchange_salt(remote_stream: &mut TcpStream, m: CipherMethod) -> io::Re
 }
 
 async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
-    if shared_conf.timeout().is_some() {
-        stream.set_keepalive(shared_conf.timeout()).unwrap();
-    }
-
     let (mut lr, mut lw) = stream.split();
     if let Some(e) = await!(socks5::Socks5HandShake::deal_with(&mut lr, &mut lw)) {
         debug!("local socks5 handshake failed {}", e);
@@ -119,13 +115,19 @@ async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream
     };
 
     let mut remote_stream = match await!(connect_sserver(shared_conf.ss_server_addr(), &mut lw)) {
-        Ok(s) => s,
+        Ok(s) => {
+            if shared_conf.keepalive().is_some() {
+                s.set_keepalive(shared_conf.keepalive()).unwrap();
+            }
+            s
+        },
+
         Err(e) => {
             debug!("connect ss server failed {}", e);
             return;
         }
     };
-
+    let peer_addr = remote_stream.local_addr().unwrap();
     let (local_salt, remote_salt) = match await!(exchange_salt(&mut remote_stream, shared_conf.method())) {
         Ok((ls, rs)) => (ls, rs),
         Err(e) => {
@@ -157,16 +159,23 @@ async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream
 
     let address = socks5::ReadAddress::read_from(&url[3..url_len]).unwrap();
     let host_name = format!("{:?}", address);
-    let mut l2r = copy_into(&mut lr, &mut enc_writer, format!("-> {}", host_name));
-    let mut r2l = copy_into(&mut dec_reader, &mut lw, format!("<- {}", host_name));
-    loop {
-        select! {
-            _ = l2r => {},
-            _ = r2l => {},
-            complete => {
-                break;
-            },
+    {
+        debug!("{} <- {}, connect", host_name, peer_addr);
+        let mut l2r = copy_into(&mut lr, &mut enc_writer, format!("{} <- {}", host_name, peer_addr));
+        let mut r2l = copy_into(&mut dec_reader, &mut lw, format!("{} -> {}", host_name, peer_addr));
+        loop {
+            select! {
+                _ = l2r => { let _ = await!(l2r.close()); },
+                _ = r2l => { let _ = await!(r2l.close()); },
+                complete => {
+                    break;
+                },
+            }
         }
+
+        debug!("{} <-> {} total done", host_name, peer_addr);
+        // let _ = await!(l2r.close());
+        // let _ = await!(r2l.close());
     }
 }
 

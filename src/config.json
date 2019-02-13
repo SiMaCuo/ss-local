@@ -5,7 +5,7 @@
     "server_port": 5678,
     "password": "90",
     "method": "aes-256-gcm",
-    "timeout": 30
+    "keepalive": 60
 }
 
         
