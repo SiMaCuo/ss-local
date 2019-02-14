@@ -2,15 +2,17 @@ use super::buf::DEFAULT_BUF_SIZE;
 use futures::{
     future::{FusedFuture, Future},
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, Close},
-    ready,
     task::{LocalWaker, Poll},
-    try_ready,
 };
 use std::{
     boxed::Box,
     io::{self, ErrorKind},
     marker::Unpin,
     pin::Pin,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 /// A future which will copy all data from a reader into a writer.
 ///
@@ -28,6 +30,8 @@ pub struct CopyInto<'a, R: ?Sized, W: ?Sized> {
     cap: usize,
     amt: u64,
     buf: Box<[u8]>,
+    quit_mark: Arc<AtomicUsize>,
+    #[allow(dead_code)]
     name: String,
 }
 
@@ -40,7 +44,7 @@ where
     R: AsyncRead + ?Sized,
     W: AsyncWrite + ?Sized,
 {
-    pub fn new(reader: &'a mut R, writer: &'a mut W, name: String) -> Self {
+    pub fn new(reader: &'a mut R, writer: &'a mut W, quit_mark: Arc<AtomicUsize>, name: String) -> Self {
         CopyInto {
             reader,
             read_done: false,
@@ -50,11 +54,11 @@ where
             pos: 0,
             cap: 0,
             buf: Box::new([0; DEFAULT_BUF_SIZE]),
-            #[allow(dead_code)]
+            quit_mark,
             name,
         }
     }
-    
+
     pub fn close(&mut self) -> Close<'_, W> {
         log::debug!("{} close", self.name);
         self.writer.close()
@@ -70,58 +74,74 @@ where
 
     fn poll(mut self: Pin<&mut Self>, lw: &LocalWaker) -> Poll<Self::Output> {
         let this = &mut *self;
+        let mut poll: Poll<io::Result<u64>> = Poll::Pending;
         loop {
             // If our buffer is empty, then we need to read some data to
             // continue.
             if this.pos == this.cap && !this.read_done {
-                match ready!(this.reader.poll_read(lw, &mut this.buf)) {
-                    Ok(n) => {
+                poll = this.reader.poll_read(lw, &mut this.buf).map(|rlt| rlt.map(|n| n as u64));
+                match poll {
+                    Poll::Ready(Ok(n)) => {
                         if n == 0 {
                             log::debug!("{} read zero bytes", this.name);
                             this.read_done = true;
                         } else {
                             this.pos = 0;
-                            this.cap = n;
+                            this.cap = n as usize;
                         }
                     }
 
-                    Err(e) => {
+                    Poll::Ready(Err(ref e)) => {
                         if e.kind() == ErrorKind::WouldBlock {
-                            return Poll::Pending;
+                            poll = Poll::Pending;
                         } else {
                             log::debug!("{} read err: {}", this.name, e);
                             this.read_done = true;
                             this.write_done = this.pos == this.cap;
                         }
                     }
+
+                    Poll::Pending => {}
                 }
             }
 
             // If our buffer has some data, let's write it out!
             while this.pos < this.cap && !this.write_done {
-                match ready!(this.writer.poll_write(lw, &this.buf[this.pos..this.cap])) {
-                    Ok(n) => {
+                poll = this
+                    .writer
+                    .poll_write(lw, &this.buf[this.pos..this.cap])
+                    .map(|rlt| rlt.map(|n| n as u64));
+                match poll {
+                    Poll::Ready(Ok(n)) => {
                         if n == 0 {
                             log::debug!("{} write zero bytes", this.name);
                             this.read_done = true;
                             this.write_done = true;
-                            return Poll::Ready(Ok(this.amt));
+                            poll = Poll::Ready(Ok(this.amt));
+
+                            break;
                         } else {
-                            this.pos += n;
+                            this.pos += n as usize;
                             this.amt += n as u64;
                         }
                     }
 
-                    Err(e) => {
+                    Poll::Ready(Err(ref e)) => {
                         if e.kind() == ErrorKind::WouldBlock {
-                            return Poll::Pending;
+                            poll = Poll::Pending;
+
+                            break;
                         } else {
                             this.read_done = true;
                             this.write_done = true;
                             log::debug!("{} write error: {}", this.name, e);
-                            return Poll::Ready(Ok(this.amt));
+                            poll = Poll::Ready(Ok(this.amt));
+
+                            break;
                         }
                     }
+
+                    Poll::Pending => {}
                 }
             }
 
@@ -130,9 +150,28 @@ where
             // done with the entire transfer.
             if this.pos == this.cap && this.read_done {
                 this.write_done = true;
-                try_ready!(this.writer.poll_flush(lw));
-                return Poll::Ready(Ok(this.amt));
+                poll = Poll::Ready(Ok(this.amt));
             }
+
+            if this.quit_mark.load(Ordering::Relaxed) == 0 {
+                this.write_done = true;
+                this.read_done = true;
+                if let Poll::Pending = poll {
+                    poll = Poll::Ready(Ok(0));
+                }
+
+                log::debug!("{} peer marked quit, i'm quit {:?}", this.name, poll);
+            } else if this.write_done == true && this.read_done == true {
+                this.quit_mark.store(0, Ordering::Relaxed);
+
+                log::debug!("{} mark i'm quit", this.name);
+            }
+
+            if this.write_done {
+                let _ = this.writer.poll_flush(lw);
+            }
+
+            return poll;
         }
     }
 }
@@ -147,10 +186,10 @@ where
     }
 }
 
-pub fn copy_into<'a, R, W>(r: &'a mut R, w: &'a mut W, name: String) -> CopyInto<'a, R, W>
+pub fn copy_into<'a, R, W>(r: &'a mut R, w: &'a mut W, quit_mark: Arc<AtomicUsize>, name: String) -> CopyInto<'a, R, W>
 where
     R: AsyncRead + ?Sized,
     W: AsyncWrite + ?Sized,
 {
-    CopyInto::new(r, w, name)
+    CopyInto::new(r, w, quit_mark, name)
 }

@@ -11,7 +11,13 @@ use bytes::Bytes;
 use futures::{executor::ThreadPoolBuilder, future::FutureObj, prelude::*, select, task::Spawn};
 use log::{debug, info};
 use romio::tcp::{TcpListener, TcpStream};
-use std::{boxed::Box, io, net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    boxed::Box,
+    io,
+    net::SocketAddr,
+    path::Path,
+    sync::{atomic::AtomicUsize, Arc},
+};
 
 async fn connect_sserver<'a, W>(addr: SocketAddr, w: &'a mut W) -> io::Result<TcpStream>
 where
@@ -120,7 +126,7 @@ async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream
                 s.set_keepalive(shared_conf.keepalive()).unwrap();
             }
             s
-        },
+        }
 
         Err(e) => {
             debug!("connect ss server failed {}", e);
@@ -161,21 +167,31 @@ async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream
     let host_name = format!("{:?}", address);
     {
         debug!("{} <- {}, connect", host_name, peer_addr);
-        let mut l2r = copy_into(&mut lr, &mut enc_writer, format!("{} <- {}", host_name, peer_addr));
-        let mut r2l = copy_into(&mut dec_reader, &mut lw, format!("{} -> {}", host_name, peer_addr));
+        let mark = Arc::new(AtomicUsize::new(1));
+        let mut l2r = copy_into(
+            &mut lr,
+            &mut enc_writer,
+            mark.clone(),
+            format!("{} <- {}", host_name, peer_addr),
+        );
+        let mut r2l = copy_into(
+            &mut dec_reader,
+            &mut lw,
+            mark.clone(),
+            format!("{} -> {}", host_name, peer_addr),
+        );
         loop {
             select! {
-                _ = l2r => { let _ = await!(l2r.close()); },
-                _ = r2l => { let _ = await!(r2l.close()); },
+                _ = l2r => { },
+                _ = r2l => { },
                 complete => {
+                    let _ = await!(l2r.close());
+                    let _ = await!(r2l.close());
+                    debug!("{} <-> {} total done", host_name, peer_addr);
                     break;
                 },
             }
         }
-
-        debug!("{} <-> {} total done", host_name, peer_addr);
-        // let _ = await!(l2r.close());
-        // let _ = await!(r2l.close());
     }
 }
 
