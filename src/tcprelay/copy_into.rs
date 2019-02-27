@@ -2,7 +2,7 @@ use super::buf::DEFAULT_BUF_SIZE;
 use futures::{
     future::{FusedFuture, Future},
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, Close},
-    task::{LocalWaker, Poll},
+    task::{Waker, Poll},
 };
 use std::{
     boxed::Box,
@@ -72,14 +72,14 @@ where
 {
     type Output = io::Result<u64>;
 
-    fn poll(mut self: Pin<&mut Self>, lw: &LocalWaker) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, waker: &Waker) -> Poll<Self::Output> {
         let this = &mut *self;
         let mut poll: Poll<io::Result<u64>> = Poll::Pending;
         loop {
             // If our buffer is empty, then we need to read some data to
             // continue.
             if this.pos == this.cap && !this.read_done {
-                poll = this.reader.poll_read(lw, &mut this.buf).map(|rlt| rlt.map(|n| n as u64));
+                poll = this.reader.poll_read(waker, &mut this.buf).map(|rlt| rlt.map(|n| n as u64));
                 match poll {
                     Poll::Ready(Ok(n)) => {
                         if n == 0 {
@@ -109,7 +109,7 @@ where
             while this.pos < this.cap && !this.write_done {
                 poll = this
                     .writer
-                    .poll_write(lw, &this.buf[this.pos..this.cap])
+                    .poll_write(waker, &this.buf[this.pos..this.cap])
                     .map(|rlt| rlt.map(|n| n as u64));
                 match poll {
                     Poll::Ready(Ok(n)) => {
@@ -168,7 +168,7 @@ where
             }
 
             if this.write_done {
-                let _ = this.writer.poll_flush(lw);
+                let _ = this.writer.poll_flush(waker);
             }
 
             return poll;

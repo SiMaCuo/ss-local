@@ -6,7 +6,7 @@ use futures::{
     io,
     prelude::*,
     task::{
-        LocalWaker,
+        Waker,
         Poll::{self, *},
     },
     try_ready,
@@ -63,9 +63,9 @@ where
         }
     }
 
-    fn read_length(&mut self, lw: &LocalWaker) -> Poll<Result<usize, io::Error>> {
+    fn read_length(&mut self, waker: &Waker) -> Poll<Result<usize, io::Error>> {
         let expect_len = 2 + self.tag_len;
-        let ciphertext = try_ready!(self.reader.fill_buf(lw, expect_len));
+        let ciphertext = try_ready!(self.reader.fill_buf(waker, expect_len));
         if ciphertext.len() >= expect_len {
             &mut self.len[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
             let _ = self.cipher.decrypt(&mut self.len[..expect_len]);
@@ -82,11 +82,11 @@ where
         Pending
     }
 
-    fn read_data(&mut self, lw: &LocalWaker, data_len: usize, out: &mut [u8]) -> Poll<Result<usize, io::Error>> {
+    fn read_data(&mut self, waker: &Waker, data_len: usize, out: &mut [u8]) -> Poll<Result<usize, io::Error>> {
         let expect_len = data_len + self.tag_len;
         debug_assert!(expect_len <= SS_TCP_CHUNK_LEN);
 
-        let ciphertext = try_ready!(self.reader.fill_buf(lw, expect_len));
+        let ciphertext = try_ready!(self.reader.fill_buf(waker, expect_len));
         if ciphertext.len() >= expect_len {
             let out_len = out.len();
             let rlt = if out_len >= expect_len {
@@ -121,7 +121,7 @@ where
         Pending
     }
 
-    fn decrypt_data(&mut self, lw: &LocalWaker, buf: &mut [u8]) -> Poll<Result<usize, io::Error>> {
+    fn decrypt_data(&mut self, waker: &Waker, buf: &mut [u8]) -> Poll<Result<usize, io::Error>> {
         match self.poll {
             Ready(Ok(_)) => {}
 
@@ -134,7 +134,7 @@ where
         while copy_len < cap {
             match self.read_step {
                 ReadingStep::Length => {
-                    let poll = self.read_length(lw);
+                    let poll = self.read_length(waker);
                     match poll {
                         Ready(Ok(data_len)) => {
                             self.read_step = ReadingStep::Data(data_len);
@@ -150,7 +150,7 @@ where
                 }
 
                 ReadingStep::Data(data_len) => {
-                    let poll = self.read_data(lw, data_len, &mut buf[copy_len..]);
+                    let poll = self.read_data(waker, data_len, &mut buf[copy_len..]);
                     match poll {
                         Ready(Ok(n)) => {
                             copy_len += n;
@@ -176,7 +176,7 @@ impl<R> AsyncRead for AeadDecryptedReader<R>
 where
     R: AsyncRead,
 {
-    fn poll_read(&mut self, lw: &LocalWaker, buf: &mut [u8]) -> Poll<Result<usize, io::Error>> {
+    fn poll_read(&mut self, waker: &Waker, buf: &mut [u8]) -> Poll<Result<usize, io::Error>> {
         debug_assert!(buf.len() > 0);
 
         if self.cap - self.pos > 0 {
@@ -192,7 +192,7 @@ where
             return Ready(Ok(len));
         }
 
-        self.decrypt_data(lw, buf)
+        self.decrypt_data(waker, buf)
     }
 }
 
@@ -227,7 +227,7 @@ where
         }
     }
 
-    fn write_payload(&mut self, lw: &LocalWaker, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
+    fn write_payload(&mut self, waker: &Waker, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
         debug_assert!(buf.len() <= self.payload_len);
 
         if self.remaining.len() > 0 {
@@ -242,7 +242,7 @@ where
         let enc_cap = enc_length_end + buf.len() + self.tag_len;
         &mut enc_data[enc_length_end..enc_length_end + buf.len()].copy_from_slice(buf);
         let _ = self.cipher.encrypt(&mut enc_data[enc_length_end..enc_cap]);
-        let n = try_ready!(self.writer.poll_write(lw, &enc_data[..enc_cap]));
+        let n = try_ready!(self.writer.poll_write(waker, &enc_data[..enc_cap]));
         if n != enc_cap {
             debug_assert!(self.remaining.len() == 0);
             self.remaining.reserve(enc_cap - n);
@@ -255,13 +255,13 @@ where
         Ready(Ok(buf.len()))
     }
 
-    fn write(&mut self, lw: &LocalWaker, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
+    fn write(&mut self, waker: &Waker, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
         let mut total_write = 0usize;
         for i in 0..(buf.len() / self.payload_len) + 1 {
             let boundary = (i + 1) * self.payload_len;
             let end = if boundary > buf.len() { buf.len() } else { boundary };
 
-            let n = try_ready!(self.write_payload(lw, &buf[i * self.payload_len..end]));
+            let n = try_ready!(self.write_payload(waker, &buf[i * self.payload_len..end]));
             total_write += n;
             // May wirte zero error, may not be fully written later
             if n == 0 {
@@ -277,10 +277,10 @@ impl<W> AsyncWrite for AeadEncryptorWriter<W>
 where
     W: AsyncWrite,
 {
-    fn poll_write(&mut self, lw: &LocalWaker, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
+    fn poll_write(&mut self, waker: &Waker, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
         let remain_len = self.remaining.len();
         while self.pos < remain_len {
-            self.pos += try_ready!(self.writer.poll_write(lw, &self.remaining[self.pos..remain_len]));
+            self.pos += try_ready!(self.writer.poll_write(waker, &self.remaining[self.pos..remain_len]));
         }
 
         if self.pos > 0 {
@@ -288,14 +288,14 @@ where
             self.pos = 0;
         }
 
-        self.write(lw, buf)
+        self.write(waker, buf)
     }
 
-    fn poll_flush(&mut self, lw: &LocalWaker) -> Poll<Result<(), io::Error>> {
-        self.writer.poll_flush(lw)
+    fn poll_flush(&mut self, waker: &Waker) -> Poll<Result<(), io::Error>> {
+        self.writer.poll_flush(waker)
     }
 
-    fn poll_close(&mut self, lw: &LocalWaker) -> Poll<Result<(), io::Error>> {
-        self.writer.poll_close(lw)
+    fn poll_close(&mut self, waker: &Waker) -> Poll<Result<(), io::Error>> {
+        self.writer.poll_close(waker)
     }
 }

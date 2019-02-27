@@ -211,7 +211,7 @@ impl Service {
             .pool_size(self.config.romio_threadpool_size())
             .create()
             .unwrap();
-        let listener = TcpListener::bind(&self.config.listen_addr())
+        let mut listener = TcpListener::bind(&self.config.listen_addr())
             .unwrap_or_else(|e| panic!("listen on {} failed {}", self.config.listen_addr(), e));
         let mut incoming = listener.incoming();
         info!("Listening on: {}", self.config.listen_addr());

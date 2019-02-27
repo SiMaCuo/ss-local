@@ -1,7 +1,7 @@
 use futures::{
     io::{AsyncRead, Error},
     task::{
-        LocalWaker,
+        Waker,
         Poll::{self, *},
     },
     try_ready,
@@ -47,13 +47,13 @@ impl<R: AsyncRead> BufReader<R> {
         self.eof
     }
 
-    pub fn fill_buf(&mut self, lw: &LocalWaker, expect_len: usize) -> Poll<Result<&[u8], Error>> {
+    pub fn fill_buf(&mut self, waker: &Waker, expect_len: usize) -> Poll<Result<&[u8], Error>> {
         debug_assert!(expect_len <= self.buf.len());
 
         if !self.eof {
             if self.pos >= self.cap {
                 debug_assert!(self.pos == self.cap);
-                self.cap = try_ready!(self.inner.poll_read(lw, &mut self.buf));
+                self.cap = try_ready!(self.inner.poll_read(waker, &mut self.buf));
                 self.eof = self.cap == 0;
                 self.pos = 0;
             } else if expect_len > self.cap - self.pos {
@@ -66,7 +66,7 @@ impl<R: AsyncRead> BufReader<R> {
                 self.pos = 0;
                 self.cap = move_len;
 
-                let read_len = try_ready!(self.inner.poll_read(lw, &mut self.buf[move_len..]));
+                let read_len = try_ready!(self.inner.poll_read(waker, &mut self.buf[move_len..]));
                 self.eof = read_len == 0;
                 self.cap += read_len;
             }
