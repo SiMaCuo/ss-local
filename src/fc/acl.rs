@@ -1,9 +1,11 @@
 // use ipset::IpSet;
+use ipnet::IpNet;
 use log::info;
 use pcre2::bytes::Regex;
 use std::{
     fs::File,
     io::{self, BufRead, BufReader},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     ops::{Deref, DerefMut},
     path::Path,
 };
@@ -39,38 +41,83 @@ impl<'a> DerefMut for LineClear<'a> {
 }
 
 struct Rules {
-    rules: Vec<Regex>,
+    ipv4: Vec<Ipv4Addr>,
+    ipv6: Vec<Ipv6Addr>,
+    net: Vec<IpNet>,
+    re: Vec<Regex>,
 }
 
 impl Rules {
     fn new() -> Self {
         Rules {
-            rules: Vec::with_capacity(2048),
+            ipv4: Vec::new(),
+            ipv6: Vec::new(),
+            net: Vec::new(),
+            re: Vec::with_capacity(2048),
         }
     }
 
     pub fn add_rule(&mut self, rule: &str) {
+        if let Ok(ip) = rule.parse::<Ipv4Addr>() {
+            self.ipv4.push(ip);
+            return;
+        }
+
+        if let Ok(ip) = rule.parse::<Ipv6Addr>() {
+            self.ipv6.push(ip);
+            return;
+        }
+
+        if let Ok(net) = rule.parse::<IpNet>() {
+            self.net.push(net);
+            return;
+        }
+
         let _ = Regex::new(rule)
             .map_err(|err| {
                 info!("rule {} failed {}", rule, err);
-
                 err
             })
             .and_then(|re| {
-                self.rules.push(re);
-
+                self.re.push(re);
                 Ok(())
             });
     }
 
     pub fn is_match(&self, m: &str) -> bool {
-        for rule in self.rules.iter() {
-            match rule.is_match(m.as_bytes()) {
-                Ok(true) => {
+        if let Ok(sockaddr) = m.parse::<SocketAddr>() {
+            for net in self.net.iter() {
+                if net.contains(&sockaddr.ip()) {
                     return true;
                 }
+            }
 
-                _ => {}
+            match sockaddr {
+                SocketAddr::V4(addr) => {
+                    for ip in self.ipv4.iter() {
+                        if addr.ip() == ip {
+                            return true;
+                        }
+                    }
+                }
+
+                SocketAddr::V6(addr) => {
+                    for ip in self.ipv6.iter() {
+                        if addr.ip() == ip {
+                            return true;
+                        }
+                    }
+                }
+            }
+        } else {
+            for rule in self.re.iter() {
+                match rule.is_match(m.as_bytes()) {
+                    Ok(true) => {
+                        return true;
+                    }
+
+                    _ => {}
+                }
             }
         }
 
@@ -80,7 +127,8 @@ impl Rules {
 
 pub enum AclResult {
     ByPass,
-    Block,
+    RemoteProxy,
+    Reject,
 }
 
 pub struct Acl {
@@ -117,25 +165,13 @@ impl Acl {
             }
 
             if l.starts_with("[outbound_block_list]") {
-                // list_ipv4 = &outbound_block_list_ipv4;
-                // list_ipv6 = &outbound_block_list_ipv6;
                 rules = Some(&mut self.outbound_block_list_rules);
                 continue;
             } else if l.starts_with("[black_list]") || l.starts_with("[bypass_list]") {
-                // list_ipv4 = &black_list_ipv4;
-                // list_ipv6 = &black_list_ipv6;
                 rules = Some(&mut self.black_list_rules);
                 continue;
             } else if l.starts_with("[white_list]") || l.starts_with("[proxy_list]") {
-                // list_ipv4 = &white_list_ipv4;
-                // list_ipv6 = &white_list_ipv6;
                 rules = Some(&mut self.white_list_rules);
-                continue;
-            } else if l.starts_with("[reject_all]") || l.starts_with("[bypass_all]") {
-                // acl_mode = WHITE_LIST;
-                continue;
-            } else if l.starts_with("[accept_all]") || l.starts_with("[proxy_all]") {
-                // acl_mode = BLACK_LIST;
                 continue;
             }
 
@@ -147,19 +183,15 @@ impl Acl {
         Ok(())
     }
 
-    pub fn acl_match_host(&self, host: &str) -> AclResult {
-        if self.black_list_rules.is_match(host) {
-            return AclResult::Block;
+    pub fn acl_match(&self, m: &str) -> AclResult {
+        if self.outbound_block_list_rules.is_match(m) {
+            return AclResult::Reject;
         }
 
-        AclResult::ByPass
-    }
-
-    pub fn outbound_block_match_host(&self, host: &str) -> AclResult {
-        if self.outbound_block_list_rules.is_match(host) {
-            return AclResult::Block;
+        if self.black_list_rules.is_match(m) {
+            return AclResult::RemoteProxy;
         }
 
-        AclResult::ByPass
+        return AclResult::ByPass;
     }
 }
