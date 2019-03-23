@@ -5,7 +5,7 @@ use pcre2::bytes::Regex;
 use std::{
     fs::File,
     io::{self, BufRead, BufReader},
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     ops::{Deref, DerefMut},
     path::Path,
 };
@@ -41,8 +41,7 @@ impl<'a> DerefMut for LineClear<'a> {
 }
 
 struct Rules {
-    ipv4: Vec<Ipv4Addr>,
-    ipv6: Vec<Ipv6Addr>,
+    ips: Vec<IpAddr>,
     net: Vec<IpNet>,
     re: Vec<Regex>,
 }
@@ -50,21 +49,15 @@ struct Rules {
 impl Rules {
     fn new() -> Self {
         Rules {
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
+            ips: Vec::new(),
             net: Vec::new(),
             re: Vec::with_capacity(2048),
         }
     }
 
     pub fn add_rule(&mut self, rule: &str) {
-        if let Ok(ip) = rule.parse::<Ipv4Addr>() {
-            self.ipv4.push(ip);
-            return;
-        }
-
-        if let Ok(ip) = rule.parse::<Ipv6Addr>() {
-            self.ipv6.push(ip);
+        if let Ok(ip) = rule.parse::<IpAddr>() {
+            self.ips.push(ip);
             return;
         }
 
@@ -85,28 +78,24 @@ impl Rules {
     }
 
     pub fn is_match(&self, m: &str) -> bool {
-        if let Ok(sockaddr) = m.parse::<SocketAddr>() {
+        let addr = if let Ok(sockaddr) = m.parse::<SocketAddr>() {
+            Some(sockaddr.ip())
+        } else if let Ok(ipaddr) = m.parse::<IpAddr>() {
+            Some(ipaddr)
+        } else {
+            None
+        };
+
+        if let Some(ipaddr) = addr {
             for net in self.net.iter() {
-                if net.contains(&sockaddr.ip()) {
+                if net.contains(&ipaddr) {
                     return true;
                 }
             }
 
-            match sockaddr {
-                SocketAddr::V4(addr) => {
-                    for ip in self.ipv4.iter() {
-                        if addr.ip() == ip {
-                            return true;
-                        }
-                    }
-                }
-
-                SocketAddr::V6(addr) => {
-                    for ip in self.ipv6.iter() {
-                        if addr.ip() == ip {
-                            return true;
-                        }
-                    }
+            for ip in self.ips.iter() {
+                if &ipaddr == ip {
+                    return true;
                 }
             }
         } else {
