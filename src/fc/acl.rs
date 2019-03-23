@@ -1,43 +1,84 @@
 // use ipset::IpSet;
+use log::info;
 use regex::{self, Regex};
 use std::{
+    cell::Cell,
     collections::LinkedList,
     fs::File,
     io::{self, BufRead, BufReader},
+    ops::{Deref, DerefMut},
     path::Path,
 };
 
+struct LineClear<'a> {
+    line: &'a mut String,
+}
+
+impl<'a> LineClear<'a> {
+    fn new(line: &'a mut String) -> Self {
+        LineClear { line }
+    }
+}
+
+impl<'a> Drop for LineClear<'a> {
+    fn drop(&mut self) {
+        self.line.clear();
+    }
+}
+
+impl<'a> Deref for LineClear<'a> {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.line
+    }
+}
+
+impl<'a> DerefMut for LineClear<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.line
+    }
+}
+
 struct Rules {
-    rules: LinkedList<Regex>,
-    lru: Option<Regex>,
+    rules: Vec<Regex>,
+    lru: Cell<Option<Regex>>,
 }
 
 impl Rules {
     fn new() -> Self {
         Rules {
-            rules: LinkedList::new(),
-            lru: None,
+            rules: Vec::with_capacity(2048),
+            lru: Cell::new(None),
         }
     }
 
-    pub fn add_rule(&mut self, rule: &str) -> Result<(), regex::Error> {
-        Regex::new(rule).and_then(|re| {
-            self.rules.push_back(re);
+    pub fn add_rule(&mut self, rule: &str) {
+        let _ = Regex::new(rule)
+            .map_err(|err| {
+                info!("rule {} failed {}", rule, err);
 
-            Ok(())
-        })
+                err
+            })
+            .and_then(|re| {
+                self.rules.push(re);
+
+                Ok(())
+            });
     }
 
     pub fn is_match(&self, m: &str) -> bool {
-        if let Some(ref re) = self.lru {
-            if re.is_match(m) {
-                return true;
+        unsafe {
+            if let Some(ref re) = *(self.lru.as_ptr()) {
+                if re.is_match(m) {
+                    return true;
+                }
             }
         }
 
-        for v in self.rules.iter() {
-            if v.is_match(m) {
-                self.lru = Some(v.clone());
+        for rule in self.rules.iter() {
+            if rule.is_match(m) {
+                self.lru.set(Some(rule.clone()));
 
                 return true;
             }
@@ -59,43 +100,47 @@ pub struct Acl {
 }
 
 impl Acl {
-    pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+    pub fn new() -> Self {
+        Acl {
+            black_list_rules: Rules::new(),
+            white_list_rules: Rules::new(),
+            outbound_block_list_rules: Rules::new(),
+        }
+    }
+
+    pub fn init<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
         let fs = File::open(path)?;
         let mut buf = BufReader::new(fs);
         let mut line = String::with_capacity(512);
         let mut rules: Option<&mut Rules> = None;
+        let mut count: usize = 0;
 
-        let mut acl = Acl {
-            black_list_rules: Rules::new(),
-            white_list_rules: Rules::new(),
-            outbound_block_list_rules: Rules::new(),
-        };
-
-        let pat: &[_] = &[' ', '\t', '\r', '\n', '#'];
+        let pat: &[_] = &[' ', '\t', '\r', '\n'];
         while let Ok(n) = buf.read_line(&mut line) {
             if n == 0 {
-                continue;
+                break;
             }
 
-            let l = line.trim_matches(pat);
-            if l.len() == 0 {
+            let g = LineClear::new(&mut line);
+            let l = g.trim_matches(pat);
+            if l.len() == 0 || l.starts_with("#") {
                 continue;
             }
 
             if l.starts_with("[outbound_block_list]") {
                 // list_ipv4 = &outbound_block_list_ipv4;
                 // list_ipv6 = &outbound_block_list_ipv6;
-                rules = Some(&mut acl.outbound_block_list_rules);
+                rules = Some(&mut self.outbound_block_list_rules);
                 continue;
             } else if l.starts_with("[black_list]") || l.starts_with("[bypass_list]") {
                 // list_ipv4 = &black_list_ipv4;
                 // list_ipv6 = &black_list_ipv6;
-                rules = Some(&mut acl.black_list_rules);
+                rules = Some(&mut self.black_list_rules);
                 continue;
             } else if l.starts_with("[white_list]") || l.starts_with("[proxy_list]") {
                 // list_ipv4 = &white_list_ipv4;
                 // list_ipv6 = &white_list_ipv6;
-                rules = Some(&mut acl.white_list_rules);
+                rules = Some(&mut self.white_list_rules);
                 continue;
             } else if l.starts_with("[reject_all]") || l.starts_with("[bypass_all]") {
                 // acl_mode = WHITE_LIST;
@@ -106,11 +151,13 @@ impl Acl {
             }
 
             if let Some(ref mut r) = rules {
+                count += 1;
                 r.add_rule(l);
             }
         }
 
-        Ok(acl)
+        info!("rules {}", count);
+        Ok(())
     }
 
     pub fn acl_match_host(&self, host: &str) -> AclResult {
