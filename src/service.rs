@@ -200,10 +200,12 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new() -> Self {
-        Service {
-            config: Arc::new(SsConfig::new(Path::new("./config.json")).unwrap()),
-        }
+    pub fn new() -> io::Result<Self> {
+        SsConfig::new(Path::new("./config.json")).and_then(|c| {
+            let srv = Service { config: Arc::new(c) };
+
+            Ok(srv)
+        })
     }
 
     pub async fn serve(&mut self) {

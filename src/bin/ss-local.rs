@@ -1,19 +1,25 @@
 #![feature(async_await, await_macro, futures_api)]
 use futures::executor;
+use log::info;
 use log4rs;
-use shadowsocks::{fc::acl::Acl, service};
+use shadowsocks::service;
 
 fn main() {
     log4rs::init_file("log4rs.yml", Default::default()).unwrap();
-    let mut acl = Acl::new();
-    acl.init("gfwlist-banAD.acl");
-    let mut srv = service::Service::new();
+    let _ = service::Service::new()
+        .map_err(|err| {
+            println!("launch failed: {}", err);
+            info!("launch failed: {}", err);
 
-    executor::block_on(
-        async {
-            await!(srv.serve());
-        },
-    );
+            err
+        })
+        .and_then(|mut srv| {
+            executor::block_on(
+                async {
+                    await!(srv.serve());
+                },
+            );
 
-    ()
+            Ok(())
+        });
 }

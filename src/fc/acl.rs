@@ -1,9 +1,7 @@
 // use ipset::IpSet;
 use log::info;
-use regex::{self, Regex};
+use pcre2::bytes::Regex;
 use std::{
-    cell::Cell,
-    collections::LinkedList,
     fs::File,
     io::{self, BufRead, BufReader},
     ops::{Deref, DerefMut},
@@ -42,14 +40,12 @@ impl<'a> DerefMut for LineClear<'a> {
 
 struct Rules {
     rules: Vec<Regex>,
-    lru: Cell<Option<Regex>>,
 }
 
 impl Rules {
     fn new() -> Self {
         Rules {
             rules: Vec::with_capacity(2048),
-            lru: Cell::new(None),
         }
     }
 
@@ -68,19 +64,13 @@ impl Rules {
     }
 
     pub fn is_match(&self, m: &str) -> bool {
-        unsafe {
-            if let Some(ref re) = *(self.lru.as_ptr()) {
-                if re.is_match(m) {
+        for rule in self.rules.iter() {
+            match rule.is_match(m.as_bytes()) {
+                Ok(true) => {
                     return true;
                 }
-            }
-        }
 
-        for rule in self.rules.iter() {
-            if rule.is_match(m) {
-                self.lru.set(Some(rule.clone()));
-
-                return true;
+                _ => {}
             }
         }
 
@@ -156,7 +146,6 @@ impl Acl {
             }
         }
 
-        info!("rules {}", count);
         Ok(())
     }
 

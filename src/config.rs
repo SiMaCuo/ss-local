@@ -1,9 +1,9 @@
-use crate::crypto::cipher::CipherMethod;
+use crate::{crypto::cipher::CipherMethod, fc::acl::Acl};
 use bytes::Bytes;
 use serde_derive::{Deserialize, Serialize};
 use std::{
     fs::File,
-    io::Error,
+    io::{Error, ErrorKind},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
     time::Duration,
@@ -18,6 +18,7 @@ struct ConfigJson {
     password: String,
     method: String,
     keepalive: u64,
+    acl: String,
 }
 
 impl ConfigJson {
@@ -30,7 +31,6 @@ impl ConfigJson {
     }
 }
 
-#[derive(Debug, Clone)]
 pub struct SsConfig {
     local_addr: SocketAddr,
     local_threadpool_size: usize,
@@ -38,6 +38,7 @@ pub struct SsConfig {
     enc_key: Bytes,
     method: CipherMethod,
     keeplive: Option<Duration>,
+    acl: Acl,
 }
 
 impl SsConfig {
@@ -51,14 +52,25 @@ impl SsConfig {
             Some(Duration::from_secs(json.keepalive))
         };
 
-        let s = SsConfig {
+        let acl_path = Path::new(&json.acl);
+        if acl_path.is_file() == false {
+            return Err(Error::new(
+                ErrorKind::NotFound,
+                format!("{:?}, not exist or not file", acl_path),
+            ));
+        }
+
+        let mut s = SsConfig {
             local_addr,
             local_threadpool_size: json.local_threadpool_size,
             server_addr,
             enc_key: CipherMethod::derive_key(json.password.as_bytes(), 32),
             method: json.method.parse().unwrap(),
             keeplive,
+            acl: Acl::new(),
         };
+
+        s.acl.init(acl_path);
 
         Ok(s)
     }
