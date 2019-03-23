@@ -70,7 +70,7 @@ impl SsConfig {
             acl: Acl::new(),
         };
 
-        s.acl.init(acl_path);
+        s.acl.init(acl_path)?;
 
         Ok(s)
     }

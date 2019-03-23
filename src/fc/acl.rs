@@ -101,11 +101,10 @@ impl Acl {
     pub fn init<P: AsRef<Path>>(&mut self, path: P) -> io::Result<()> {
         let fs = File::open(path)?;
         let mut buf = BufReader::new(fs);
-        let mut line = String::with_capacity(512);
         let mut rules: Option<&mut Rules> = None;
-        let mut count: usize = 0;
 
         let pat: &[_] = &[' ', '\t', '\r', '\n'];
+        let mut line = String::with_capacity(512);
         while let Ok(n) = buf.read_line(&mut line) {
             if n == 0 {
                 break;
@@ -141,7 +140,6 @@ impl Acl {
             }
 
             if let Some(ref mut r) = rules {
-                count += 1;
                 r.add_rule(l);
             }
         }
