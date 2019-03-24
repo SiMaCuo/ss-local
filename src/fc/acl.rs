@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use fnv::FnvHashSet;
 use ipnet::IpNet;
 use log::info;
@@ -44,8 +45,8 @@ impl<'a> DerefMut for LineClear<'a> {
 }
 
 struct BypassHost {
-    h: FnvHashSet<String>,
-    v: Vec<String>,
+    h: FnvHashSet<Bytes>,
+    v: Vec<Bytes>,
     cap: usize,
     rng: SmallRng,
 }
@@ -60,20 +61,22 @@ impl BypassHost {
         }
     }
 
-    pub fn is_match(&self, host: &String) -> bool {
-        return self.h.contains(host);
+    pub fn is_match(&self, host: &str) -> bool {
+        return self.h.contains(host.as_bytes());
     }
 
-    pub fn add_rule(&mut self, host: String) {
+    pub fn add_rule(&mut self, host: &str) {
+        let bh = Bytes::from(host);
         if self.v.len() < self.cap {
-            self.h.insert(host.clone());
-            self.v.push(host);
+            let bv = bh.slice_from(0);
+            self.h.insert(bh);
+            self.v.push(bv);
         } else {
             let index = self.rng.gen_range(0, self.cap);
             unsafe {
                 let ptr = self.v.as_mut_ptr().add(index);
-                let rm = std::ptr::replace(ptr, host);
-                self.h.remove(&rm);
+                let b = std::ptr::replace(ptr, bh);
+                self.h.remove(&b);
             }
         }
     }
@@ -134,7 +137,7 @@ impl Rules {
         }
     }
 
-    pub fn add_rule(&mut self, rule: &str) {
+    fn add_rule(&mut self, rule: &str) {
         if let Ok(ip) = rule.parse::<IpAddr>() {
             self.ips.push(ip);
             return;
@@ -259,7 +262,7 @@ impl Acl {
         Ok(())
     }
 
-    pub fn acl_match(&self, m: String) -> AclResult {
+    pub fn acl_match(&self, m: &str) -> AclResult {
         {
             if self.white_list_rules.read().is_match(&m) {
                 return AclResult::ByPass;
