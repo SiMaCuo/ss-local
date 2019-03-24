@@ -15,7 +15,7 @@ use std::{
     boxed::Box,
     io,
     net::SocketAddr,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{atomic::AtomicUsize, Arc},
 };
 
@@ -200,8 +200,8 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn new() -> io::Result<Self> {
-        SsConfig::new(Path::new("./config.json")).and_then(|c| {
+    pub fn new(dir: PathBuf, conf: &Path) -> io::Result<Self> {
+        SsConfig::new(dir, conf).and_then(|c| {
             let srv = Service { config: Arc::new(c) };
 
             Ok(srv)
@@ -216,6 +216,7 @@ impl Service {
         let mut listener = TcpListener::bind(&self.config.listen_addr())
             .unwrap_or_else(|e| panic!("listen on {} failed {}", self.config.listen_addr(), e));
         let mut incoming = listener.incoming();
+        println!("Listening on: {}", self.config.listen_addr());
         info!("Listening on: {}", self.config.listen_addr());
         while let Some(Ok(stream)) = await!(incoming.next()) {
             let fut = run_shadowsock_connection(self.config.clone(), stream);

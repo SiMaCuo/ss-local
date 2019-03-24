@@ -1,4 +1,3 @@
-// use ipset::IpSet;
 use ipnet::IpNet;
 use log::info;
 use pcre2::bytes::Regex;
@@ -156,10 +155,10 @@ impl Acl {
             if l.starts_with("[outbound_block_list]") {
                 rules = Some(&mut self.outbound_block_list_rules);
                 continue;
-            } else if l.starts_with("[black_list]") || l.starts_with("[bypass_list]") {
+            } else if l.starts_with("[proxy_list]") || l.starts_with("[black_list]") {
                 rules = Some(&mut self.black_list_rules);
                 continue;
-            } else if l.starts_with("[white_list]") || l.starts_with("[proxy_list]") {
+            } else if l.starts_with("[bypass_all]") || l.starts_with("[white_list]") {
                 rules = Some(&mut self.white_list_rules);
                 continue;
             }

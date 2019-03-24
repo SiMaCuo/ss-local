@@ -5,7 +5,7 @@ use std::{
     fs::File,
     io::{Error, ErrorKind},
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -39,10 +39,11 @@ pub struct SsConfig {
     method: CipherMethod,
     keeplive: Option<Duration>,
     acl: Acl,
+    dir: PathBuf,
 }
 
 impl SsConfig {
-    pub fn new(path: &Path) -> Result<Self, Error> {
+    pub fn new(dir: PathBuf, path: &Path) -> Result<Self, Error> {
         let json = ConfigJson::new(path)?;
         let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), json.local_port);
         let server_addr = format!("{}:{}", json.server_ip, json.server_port).parse().unwrap();
@@ -52,11 +53,15 @@ impl SsConfig {
             Some(Duration::from_secs(json.keepalive))
         };
 
-        let acl_path = Path::new(&json.acl);
+        let mut acl_path = dir.clone();
+        acl_path.push(json.acl);
         if acl_path.is_file() == false {
             return Err(Error::new(
                 ErrorKind::NotFound,
-                format!("{:?}, not exist or not file", acl_path),
+                format!(
+                    "this program use acl file for remote proxy, but {} not exist or not file",
+                    acl_path.display()
+                ),
             ));
         }
 
@@ -68,6 +73,7 @@ impl SsConfig {
             method: json.method.parse().unwrap(),
             keeplive,
             acl: Acl::new(),
+            dir,
         };
 
         s.acl.init(acl_path)?;
