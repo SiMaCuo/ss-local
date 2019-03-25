@@ -5,9 +5,9 @@
 
 pub mod service;
 
-pub mod fc;
 mod config;
 mod crypto;
 mod err;
+mod fc;
 mod tcprelay;
 // mod leakybuf;
