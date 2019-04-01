@@ -1,4 +1,5 @@
 firewall-cmd --zone=external --add-interface=enp1s0f1
+firewall-cmd --zone=external --add-masquerade
 firewall-cmd --set-default-zone=internal
 firewall-cmd --direct --add-rule ipv4 nat POSTROUTING 0 -o enp1s0f1 -j MASQUERADE
 firewall-cmd --direct --add-rule ipv4 filter FORWARD 0 -i enp1s0f2 -o enp1s0f1 -j ACCEPT
