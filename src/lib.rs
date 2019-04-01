@@ -2,6 +2,7 @@
 #![feature(box_syntax)]
 #![feature(read_initializer)]
 #![allow(dead_code)]
+#![feature(ip)]
 
 pub mod service;
 

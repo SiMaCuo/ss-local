@@ -1,4 +1,6 @@
-use crate::{crypto::cipher::CipherMethod, fc::acl::Acl};
+use crate::crypto::cipher::CipherMethod;
+#[cfg(target_os = "windows")]
+use crate::fc::acl::{Acl, AclResult};
 use bytes::Bytes;
 use serde_derive::{Deserialize, Serialize};
 use std::{
@@ -38,6 +40,7 @@ pub struct SsConfig {
     enc_key: Bytes,
     method: CipherMethod,
     keeplive: Option<Duration>,
+    #[cfg(target_os = "windows")]
     acl: Acl,
     dir: PathBuf,
 }
@@ -72,10 +75,12 @@ impl SsConfig {
             enc_key: CipherMethod::derive_key(json.password.as_bytes(), 32),
             method: json.method.parse().unwrap(),
             keeplive,
+            #[cfg(target_os = "windows")]
             acl: Acl::new(),
             dir,
         };
 
+        #[cfg(target_os = "windows")]
         s.acl.init(acl_path)?;
 
         Ok(s)
@@ -103,5 +108,10 @@ impl SsConfig {
 
     pub fn keepalive(&self) -> Option<Duration> {
         self.keeplive
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn acl_match(&self, m: &str) -> AclResult {
+        self.acl.acl_match(m)
     }
 }
