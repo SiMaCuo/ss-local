@@ -1486,7 +1486,6 @@
 (^|\.)cloudfront\.net$
 (^|\.)dmm\.co\.jp$
 (^|\.)gvt\w\.com$
-(^|\.)microsoft\.com$
 (^|\.)ping\.pe$
 (^|\.)s3\.amazonaws\.com$
 (^|\.)tumbex\.com$
