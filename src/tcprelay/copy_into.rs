@@ -2,7 +2,7 @@ use super::buf::DEFAULT_BUF_SIZE;
 use futures::{
     future::{FusedFuture, Future},
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, Close},
-    task::{Waker, Poll},
+    task::{Poll, Waker},
 };
 use std::{
     boxed::Box,
@@ -28,7 +28,7 @@ pub struct CopyInto<'a, R: ?Sized, W: ?Sized> {
     writer: &'a mut W,
     pos: usize,
     cap: usize,
-    amt: u64,
+    amt: usize,
     buf: Box<[u8]>,
     quit_mark: Arc<AtomicUsize>,
     #[allow(dead_code)]
@@ -70,24 +70,27 @@ where
     R: AsyncRead + ?Sized,
     W: AsyncWrite + ?Sized,
 {
-    type Output = io::Result<u64>;
+    type Output = io::Result<usize>;
 
     fn poll(mut self: Pin<&mut Self>, waker: &Waker) -> Poll<Self::Output> {
         let this = &mut *self;
-        let mut poll: Poll<io::Result<u64>> = Poll::Pending;
+        let mut poll: Poll<io::Result<usize>> = Poll::Pending;
         loop {
             // If our buffer is empty, then we need to read some data to
             // continue.
             if this.pos == this.cap && !this.read_done {
-                poll = this.reader.poll_read(waker, &mut this.buf).map(|rlt| rlt.map(|n| n as u64));
+                poll = this
+                    .reader
+                    .poll_read(waker, &mut this.buf);
+                    // .map(|rlt| rlt.map(|n| n as u64));
                 match poll {
                     Poll::Ready(Ok(n)) => {
                         if n == 0 {
-                            log::debug!("{} read zero bytes", this.name);
+                            log::debug!("{} poll read zero bytes", this.name);
                             this.read_done = true;
                         } else {
                             this.pos = 0;
-                            this.cap = n as usize;
+                            this.cap = n;
                         }
                     }
 
@@ -95,7 +98,7 @@ where
                         if e.kind() == ErrorKind::WouldBlock {
                             poll = Poll::Pending;
                         } else {
-                            log::debug!("{} read err: {}", this.name, e);
+                            log::debug!("{} poll read error: {}", this.name, e);
                             this.read_done = true;
                             this.write_done = this.pos == this.cap;
                         }
@@ -109,20 +112,19 @@ where
             while this.pos < this.cap && !this.write_done {
                 poll = this
                     .writer
-                    .poll_write(waker, &this.buf[this.pos..this.cap])
-                    .map(|rlt| rlt.map(|n| n as u64));
+                    .poll_write(waker, &this.buf[this.pos..this.cap]);
                 match poll {
                     Poll::Ready(Ok(n)) => {
                         if n == 0 {
-                            log::debug!("{} write zero bytes", this.name);
+                            log::debug!("{} poll write zero bytes", this.name);
                             this.read_done = true;
                             this.write_done = true;
                             poll = Poll::Ready(Ok(this.amt));
 
                             break;
                         } else {
-                            this.pos += n as usize;
-                            this.amt += n as u64;
+                            this.pos += n;
+                            this.amt += n;
                         }
                     }
 
@@ -134,7 +136,7 @@ where
                         } else {
                             this.read_done = true;
                             this.write_done = true;
-                            log::debug!("{} write error: {}", this.name, e);
+                            log::debug!("{} poll write error: {}", this.name, e);
                             poll = Poll::Ready(Ok(this.amt));
 
                             break;
@@ -153,19 +155,19 @@ where
                 poll = Poll::Ready(Ok(this.amt));
             }
 
-            if this.quit_mark.load(Ordering::Relaxed) == 0 {
-                this.write_done = true;
-                this.read_done = true;
-                if let Poll::Pending = poll {
-                    poll = Poll::Ready(Ok(0));
-                }
-
-                log::debug!("{} peer marked quit, i'm quit {:?}", this.name, poll);
-            } else if this.write_done == true && this.read_done == true {
-                this.quit_mark.store(0, Ordering::Relaxed);
-
-                log::debug!("{} mark i'm quit", this.name);
-            }
+            // if this.quit_mark.load(Ordering::Relaxed) == 0 {
+            //     this.write_done = true;
+            //     this.read_done = true;
+            //     if let Poll::Pending = poll {
+            //         poll = Poll::Ready(Ok(0));
+            //     }
+            
+            //     log::debug!("{} peer marked quit, i'm quit {:?}", this.name, poll);
+            // } else if this.write_done == true && this.read_done == true {
+            //     this.quit_mark.store(0, Ordering::Relaxed);
+            
+            //     log::debug!("{} mark i'm quit", this.name);
+            // }
 
             if this.write_done {
                 let _ = this.writer.poll_flush(waker);

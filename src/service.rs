@@ -164,7 +164,7 @@ async fn proxy_shadowsock<'a>(
             return;
         }
     };
-    let peer_addr = remote_stream.peer_addr().unwrap();
+    let peer_addr = remote_stream.local_addr().unwrap();
     let (local_salt, remote_salt) = match await!(exchange_salt(&mut remote_stream, shared_conf.method())) {
         Ok((ls, rs)) => (ls, rs),
         Err(e) => {
@@ -209,7 +209,7 @@ async fn proxy_http<'a>(lr: &'a mut ReadHalf<TcpStream>, lw: &'a mut WriteHalf<T
     match await!(address.connect(lw)) {
         Ok(remote_stream) => {
             let host_name = format!("{:?}", address);
-            let peer_addr = remote_stream.peer_addr().unwrap();
+            let peer_addr = remote_stream.local_addr().unwrap();
             let (mut rr, mut rw) = remote_stream.split();
             await!(proxy_copy(lr, lw, &mut rr, &mut rw, &host_name, &peer_addr));
         }
@@ -231,7 +231,7 @@ async fn proxy_copy<'a, R, W>(
     R: AsyncRead,
     W: AsyncWrite,
 {
-    debug!("{} <- {}, connect", host_name, peer_addr);
+    debug!("{} <- {}, two-way copying", host_name, peer_addr);
     let mark = Arc::new(AtomicUsize::new(1));
     let mut l2r = copy_into(
         local_read,
@@ -259,7 +259,7 @@ async fn proxy_copy<'a, R, W>(
     }
 }
 
-async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
+async fn run_socks5_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
     let (mut lr, mut lw) = stream.split();
     if let Some(e) = await!(socks5::Socks5HandShake::deal_with(&mut lr, &mut lw)) {
         debug!("local socks5 handshake failed {}", e);
@@ -292,7 +292,7 @@ async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream
                     &mut lr,
                     &mut lw,
                     &address,
-                    &url[3..url_len]
+                    &url[..url_len]
                 ));
             }
         }
@@ -302,7 +302,7 @@ async fn run_shadowsock_connection(shared_conf: Arc<SsConfig>, stream: TcpStream
             &mut lr,
             &mut lw,
             &address,
-            &url[3..url_len]
+            &url[..url_len]
         ));
     }
 }
@@ -331,7 +331,7 @@ impl Service {
         println!("Listening on: {}", self.config.listen_addr());
         info!("Listening on: {}", self.config.listen_addr());
         while let Some(Ok(stream)) = await!(incoming.next()) {
-            let fut = run_shadowsock_connection(self.config.clone(), stream);
+            let fut = run_socks5_connection(self.config.clone(), stream);
             threadpool.spawn_obj(FutureObj::new(Box::pin(fut))).unwrap();
         }
     }
