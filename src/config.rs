@@ -68,6 +68,7 @@ impl SsConfig {
             ));
         }
 
+        #[cfg(target_os = "windows")]
         let mut s = SsConfig {
             local_addr,
             local_threadpool_size: json.local_threadpool_size,
@@ -79,9 +80,19 @@ impl SsConfig {
             acl: Acl::new(),
             dir,
         };
-
         #[cfg(target_os = "windows")]
         s.acl.init(acl_path)?;
+
+        #[cfg(target_os = "linux")]
+        let mut s = SsConfig {
+            local_addr,
+            local_threadpool_size: json.local_threadpool_size,
+            server_addr,
+            enc_key: CipherMethod::derive_key(json.password.as_bytes(), 32),
+            method: json.method.parse().unwrap(),
+            keeplive,
+            dir,
+        };
 
         Ok(s)
     }

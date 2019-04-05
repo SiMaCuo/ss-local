@@ -23,7 +23,7 @@ use romio::tcp::{TcpListener, TcpStream};
 use std::{
     boxed::Box,
     io,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::{atomic::AtomicUsize, Arc},
 };
@@ -41,13 +41,13 @@ fn acl_match_address(conf: &SsConfig, address: &socks5::Address) -> AclResult {
             }
 
             match sock_addr.ip() {
-                IpAddr::V4(ip) => {
+                std::net::IpAddr::V4(ip) => {
                     if ip.is_private() {
                         return AclResult::Reject;
                     }
                 }
 
-                IpAddr::V6(ip) => {
+                std::net::IpAddr::V6(ip) => {
                     if ip.is_unique_local() || ip.is_unicast_link_local() || ip.is_unicast_site_local() {
                         return AclResult::Reject;
                     }
@@ -276,7 +276,8 @@ async fn run_socks5_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
     };
 
     let address = socks5::ReadAddress::read_from(&url[3..url_len]).unwrap();
-    if cfg!(target_os = "windows") {
+    #[cfg(target_os = "windows")]
+    {
         match acl_match_address(&shared_conf, &address) {
             AclResult::Reject => debug!("{:?} reject", address),
             AclResult::ByPass => {
@@ -294,7 +295,9 @@ async fn run_socks5_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
                 ));
             }
         }
-    } else if cfg!(target_os = "linux") {
+    }
+    #[cfg(target_os = "linux")]
+    {
         await!(proxy_shadowsock(
             &shared_conf,
             &mut lr,
