@@ -247,11 +247,9 @@ async fn proxy_copy<'a, R, W>(
     );
     loop {
         select! {
-            _ = l2r => { },
-            _ = r2l => { },
+            _ = l2r => { let _ = await!(l2r.close()); },
+            _ = r2l => { let _ = await!(r2l.close()); },
             complete => {
-                let _ = await!(l2r.close());
-                let _ = await!(r2l.close());
                 debug!("{} <-> {} total done", host_name, peer_addr);
                 break;
             },

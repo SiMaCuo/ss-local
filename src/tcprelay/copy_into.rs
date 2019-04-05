@@ -2,11 +2,13 @@ use super::buf::DEFAULT_BUF_SIZE;
 use futures::{
     future::{FusedFuture, Future},
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, Close},
+    ready,
     task::{Poll, Waker},
+    try_ready,
 };
 use std::{
     boxed::Box,
-    io::{self, ErrorKind},
+    io,
     marker::Unpin,
     pin::Pin,
     sync::{
@@ -60,7 +62,7 @@ where
     }
 
     pub fn close(&mut self) -> Close<'_, W> {
-        log::debug!("{} close", self.name);
+        log::debug!("{} close.", self.name);
         self.writer.close()
     }
 }
@@ -74,106 +76,66 @@ where
 
     fn poll(mut self: Pin<&mut Self>, waker: &Waker) -> Poll<Self::Output> {
         let this = &mut *self;
-        let mut poll: Poll<io::Result<usize>> = Poll::Pending;
+
+        if this.quit_mark.load(Ordering::Relaxed) == 0 {
+            this.write_done = true;
+            this.read_done = true;
+
+            return Poll::Ready(Ok(this.amt));
+        }
+
         loop {
             // If our buffer is empty, then we need to read some data to
             // continue.
             if this.pos == this.cap && !this.read_done {
-                poll = this
-                    .reader
-                    .poll_read(waker, &mut this.buf);
-                    // .map(|rlt| rlt.map(|n| n as u64));
-                match poll {
-                    Poll::Ready(Ok(n)) => {
-                        if n == 0 {
-                            log::debug!("{} poll read zero bytes", this.name);
-                            this.read_done = true;
-                        } else {
-                            this.pos = 0;
-                            this.cap = n;
-                        }
+                let _ready = Pin::new(&mut this.reader).poll_read(waker, &mut this.buf);
+                log::debug!("{}, poll read {:?}", this.name, _ready);
+                match ready!(_ready) {
+                    Ok(n) if n > 0 => {
+                        this.pos = 0;
+                        this.cap = n;
                     }
 
-                    Poll::Ready(Err(ref e)) => {
-                        if e.kind() == ErrorKind::WouldBlock {
-                            poll = Poll::Pending;
-                        } else {
-                            log::debug!("{} poll read error: {}", this.name, e);
-                            this.read_done = true;
-                            this.write_done = this.pos == this.cap;
-                        }
-                    }
+                    _ => {
+                        this.read_done = true;
 
-                    Poll::Pending => {}
+                        log::debug!("{}, poll read done", this.name,);
+                    }
                 }
             }
 
             // If our buffer has some data, let's write it out!
-            while this.pos < this.cap && !this.write_done {
-                poll = this
-                    .writer
-                    .poll_write(waker, &this.buf[this.pos..this.cap]);
-                match poll {
-                    Poll::Ready(Ok(n)) => {
-                        if n == 0 {
-                            log::debug!("{} poll write zero bytes", this.name);
-                            this.read_done = true;
-                            this.write_done = true;
-                            poll = Poll::Ready(Ok(this.amt));
-
-                            break;
-                        } else {
-                            this.pos += n;
-                            this.amt += n;
-                        }
+            while this.pos < this.cap {
+                let _ready = Pin::new(&mut this.writer).poll_write(waker, &this.buf[this.pos..this.cap]);
+                log::debug!("{}, poll write {:?}", this.name, _ready);
+                match ready!(_ready) {
+                    Ok(n) if n > 0 => {
+                        this.pos += n;
+                        this.amt += n;
                     }
 
-                    Poll::Ready(Err(ref e)) => {
-                        if e.kind() == ErrorKind::WouldBlock {
-                            poll = Poll::Pending;
-
-                            break;
-                        } else {
-                            this.read_done = true;
-                            this.write_done = true;
-                            log::debug!("{} poll write error: {}", this.name, e);
-                            poll = Poll::Ready(Ok(this.amt));
-
-                            break;
-                        }
+                    _ => {
+                        this.write_done = true;
+                        this.read_done = true;
+                        log::debug!("{}, poll write done", this.name,);
+                        break;
                     }
-
-                    Poll::Pending => {}
                 }
             }
 
             // If we've written all the data and we've seen EOF, flush out the
             // data and finish the transfer.
             // done with the entire transfer.
-            if this.pos == this.cap && this.read_done {
+            if this.pos == this.cap && this.read_done && !this.write_done {
+                let _ = try_ready!(this.writer.poll_flush(waker));
                 this.write_done = true;
-                poll = Poll::Ready(Ok(this.amt));
             }
-
-            // if this.quit_mark.load(Ordering::Relaxed) == 0 {
-            //     this.write_done = true;
-            //     this.read_done = true;
-            //     if let Poll::Pending = poll {
-            //         poll = Poll::Ready(Ok(0));
-            //     }
-            
-            //     log::debug!("{} peer marked quit, i'm quit {:?}", this.name, poll);
-            // } else if this.write_done == true && this.read_done == true {
-            //     this.quit_mark.store(0, Ordering::Relaxed);
-            
-            //     log::debug!("{} mark i'm quit", this.name);
-            // }
 
             if this.write_done {
-                let _ = this.writer.poll_flush(waker);
-            }
+                this.quit_mark.store(0, Ordering::Relaxed);
 
-            return poll;
+                return Poll::Ready(Ok(this.amt));
+            }
         }
     }
 }
@@ -184,7 +146,7 @@ where
     W: AsyncWrite + ?Sized,
 {
     fn is_terminated(&self) -> bool {
-        self.write_done && self.read_done
+        self.write_done
     }
 }
 

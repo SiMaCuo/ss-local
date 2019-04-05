@@ -6,8 +6,8 @@ use futures::{
     io,
     prelude::*,
     task::{
-        Waker,
         Poll::{self, *},
+        Waker,
     },
     try_ready,
 };
@@ -36,7 +36,7 @@ where
     cap: usize,
     amt: usize,
     tag_len: usize,
-    poll: Poll<Result<usize, io::Error>>,
+    poll: Option<Poll<Result<usize, io::Error>>>,
 }
 
 impl<R> AeadDecryptedReader<R>
@@ -59,116 +59,117 @@ where
             cap: 0,
             amt: 0,
             tag_len,
-            poll: Ready(Ok(0)),
+            poll: None,
         }
     }
 
     fn read_length(&mut self, waker: &Waker) -> Poll<Result<usize, io::Error>> {
         let expect_len = 2 + self.tag_len;
-        let ciphertext = try_ready!(self.reader.fill_buf(waker, expect_len));
-        if ciphertext.len() >= expect_len {
-            &mut self.len[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
-            let _ = self.cipher.decrypt(&mut self.len[..expect_len]);
-            self.reader.consume(expect_len);
-            self.amt += expect_len;
+        loop {
+            let ciphertext = try_ready!(self.reader.fill_buf(waker, expect_len));
+            if ciphertext.len() >= expect_len {
+                &mut self.len[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
+                let _ = self.cipher.decrypt(&mut self.len[..expect_len]);
+                self.reader.consume(expect_len);
+                self.amt += expect_len;
 
-            return Ready(Ok(BigEndian::read_u16(&self.len[..2]) as usize));
-        }
+                return Ready(Ok(BigEndian::read_u16(&self.len[..2]) as usize));
+            }
 
-        if self.reader.is_eof() {
-            return Ready(Err(ErrorKind::UnexpectedEof.into()));
+            if self.reader.is_eof() {
+                return Ready(Err(ErrorKind::UnexpectedEof.into()));
+            }
         }
-        
-        Pending
     }
 
     fn read_data(&mut self, waker: &Waker, data_len: usize, out: &mut [u8]) -> Poll<Result<usize, io::Error>> {
         let expect_len = data_len + self.tag_len;
         debug_assert!(expect_len <= SS_TCP_CHUNK_LEN);
 
-        let ciphertext = try_ready!(self.reader.fill_buf(waker, expect_len));
-        if ciphertext.len() >= expect_len {
-            let out_len = out.len();
-            let rlt = if out_len >= expect_len {
-                &mut out[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
-                let _ = self.cipher.decrypt(&mut out[..expect_len]);
+        loop {
+            let ciphertext = try_ready!(self.reader.fill_buf(waker, expect_len));
+            if ciphertext.len() >= expect_len {
+                let out_len = out.len();
+                let rlt = if out_len >= expect_len {
+                    &mut out[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
+                    let _ = self.cipher.decrypt(&mut out[..expect_len]);
 
-                Ok(data_len)
-            } else {
-                &mut self.dec[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
-                let _ = self.cipher.decrypt(&mut self.dec[..expect_len]);
-                if out_len >= data_len {
-                    &mut out[..data_len].copy_from_slice(&self.dec[..data_len]);
                     Ok(data_len)
                 } else {
-                    &mut out[..].copy_from_slice(&self.dec[..out_len]);
-                    self.cap = data_len;
-                    self.pos = out_len;
-                    Ok(out_len)
-                }
-            };
+                    &mut self.dec[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
+                    let _ = self.cipher.decrypt(&mut self.dec[..expect_len]);
+                    if out_len >= data_len {
+                        &mut out[..data_len].copy_from_slice(&self.dec[..data_len]);
+                        Ok(data_len)
+                    } else {
+                        &mut out[..].copy_from_slice(&self.dec[..out_len]);
+                        self.cap = data_len;
+                        self.pos = out_len;
+                        Ok(out_len)
+                    }
+                };
 
-            self.reader.consume(expect_len);
-            self.amt += expect_len;
+                self.reader.consume(expect_len);
+                self.amt += expect_len;
 
-            return Ready(rlt);
-        }
+                return Ready(rlt);
+            }
 
-        if self.reader.is_eof() {
-            return Ready(Err(ErrorKind::UnexpectedEof.into()));
-        }
-
-        Pending
-    }
-
-    fn decrypt_data(&mut self, waker: &Waker, buf: &mut [u8]) -> Poll<Result<usize, io::Error>> {
-        match self.poll {
-            Ready(Ok(_)) => {}
-
-            Pending | Ready(Err(_)) => {
-                return std::mem::replace(&mut self.poll, Ready(Ok(0)));
+            if self.reader.is_eof() {
+                return Ready(Err(ErrorKind::UnexpectedEof.into()));
             }
         }
+    }
 
+    fn decrypt_data(&mut self, waker: &Waker, buf: &mut [u8]) -> (Poll<Result<usize, io::Error>>, usize) {
         let (mut copy_len, cap) = (0usize, buf.len());
         while copy_len < cap {
             match self.read_step {
-                ReadingStep::Length => {
-                    let poll = self.read_length(waker);
-                    match poll {
-                        Ready(Ok(data_len)) => {
-                            self.read_step = ReadingStep::Data(data_len);
+                ReadingStep::Length => match self.read_length(waker) {
+                    Ready(Ok(data_len)) => {
+                        log::debug!("  decrypt data length {}", data_len);
+                        if data_len == 0 {
+                            return (Ready(Ok(0)), copy_len);
                         }
 
-                        Ready(Err(_)) | Pending if copy_len > 0 => {
-                            self.poll = poll;
-                            break;
-                        }
-
-                        _ => return poll,
+                        self.read_step = ReadingStep::Data(data_len);
                     }
-                }
 
-                ReadingStep::Data(data_len) => {
-                    let poll = self.read_data(waker, data_len, &mut buf[copy_len..]);
-                    match poll {
-                        Ready(Ok(n)) => {
-                            copy_len += n;
-                            self.read_step = ReadingStep::Length;
-                        }
-
-                        Ready(Err(_)) | Pending if copy_len > 0 => {
-                            self.poll = poll;
-                            break;
-                        }
-
-                        _ => return poll,
+                    Ready(Err(e)) => {
+                        log::debug!(" decrypt data lenth ({:?}, {})", e, copy_len);
+                        return (Ready(Err(e)), copy_len);
                     }
-                }
+
+                    Pending => {
+                        log::debug!(" decrypt data len (Pending, {})", copy_len);
+                        return (Pending, copy_len);
+                    }
+                },
+
+                ReadingStep::Data(data_len) => match self.read_data(waker, data_len, &mut buf[copy_len..]) {
+                    Ready(Ok(n)) => {
+                        if n == 0 {
+                            return (Ready(Ok(0)), copy_len);
+                        }
+                        log::debug!("  decrypt payload {} bytes", n);
+                        copy_len += n;
+                        self.read_step = ReadingStep::Length;
+                    }
+
+                    Ready(Err(e)) => {
+                        log::debug!(" decrypt payload ({:?}, {})", e, copy_len);
+                        return (Ready(Err(e)), copy_len);
+                    }
+
+                    Pending => {
+                        log::debug!(" decrypt payload (Pending, {})", copy_len);
+                        return (Pending, copy_len);
+                    }
+                },
             }
         }
 
-        Ready(Ok(copy_len))
+        return (Ready(Ok(copy_len)), copy_len);
     }
 }
 
@@ -189,10 +190,26 @@ where
                 self.cap = 0;
             }
 
+            log::debug!("  still has data");
             return Ready(Ok(len));
         }
 
-        self.decrypt_data(waker, buf)
+        if self.poll.is_some() {
+            unsafe {
+                return std::ptr::replace(&mut self.poll, None).unwrap();
+            }
+        }
+
+        let (poll, copy_len) = self.decrypt_data(waker, buf);
+        if copy_len == 0 {
+            return poll;
+        }
+
+        if let Pending = poll {
+            self.poll = Some(Pending);
+        }
+
+        Ready(Ok(copy_len))
     }
 }
 
@@ -229,10 +246,7 @@ where
 
     fn write_payload(&mut self, waker: &Waker, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
         debug_assert!(buf.len() <= self.payload_len);
-
-        if self.remaining.len() > 0 {
-            return Ready(Ok(0));
-        }
+        debug_assert!(self.remaining.len() == 0);
 
         let mut enc_data = [0u8; SS_TCP_CHUNK_LEN];
         let enc_length_end = 2 + self.tag_len;
@@ -244,7 +258,6 @@ where
         let _ = self.cipher.encrypt(&mut enc_data[enc_length_end..enc_cap]);
         let n = try_ready!(self.writer.poll_write(waker, &enc_data[..enc_cap]));
         if n != enc_cap {
-            debug_assert!(self.remaining.len() == 0);
             self.remaining.reserve(enc_cap - n);
             unsafe {
                 self.remaining.bytes_mut().copy_from_slice(&enc_data[n..enc_cap]);
