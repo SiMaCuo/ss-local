@@ -84,7 +84,7 @@ impl SsConfig {
         s.acl.init(acl_path)?;
 
         #[cfg(target_os = "linux")]
-        let mut s = SsConfig {
+        let s = SsConfig {
             local_addr,
             local_threadpool_size: json.local_threadpool_size,
             server_addr,
