@@ -215,7 +215,7 @@ async fn proxy_http<'a>(lr: &'a mut ReadHalf<TcpStream>, lw: &'a mut WriteHalf<T
         }
 
         Err(e) => {
-            debug!("proxy_http failed {:?}", e);
+            debug!("{:?} proxy_http failed {:?}", address, e);
         }
     }
 }
@@ -284,7 +284,7 @@ async fn run_socks5_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
                 await!(proxy_http(&mut lr, &mut lw, &address));
             }
             AclResult::RemoteProxy => {
-                debug!("{:?}, proxy", address);
+                info!("{:?}, proxy", address);
                 await!(proxy_shadowsock(
                     &shared_conf,
                     &mut lr,
