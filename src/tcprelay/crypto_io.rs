@@ -246,7 +246,9 @@ where
 
     fn write_payload(&mut self, waker: &Waker, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
         debug_assert!(buf.len() <= self.payload_len);
-        debug_assert!(self.remaining.len() == 0);
+        if self.remaining.len() > 0 {
+            return Ready(Ok(0));
+        }
 
         let mut enc_data = [0u8; SS_TCP_CHUNK_LEN];
         let enc_length_end = 2 + self.tag_len;
@@ -300,10 +302,8 @@ where
             self.pos += try_ready!(self.writer.poll_write(waker, &self.remaining[self.pos..remain_len]));
         }
 
-        if self.pos > 0 {
-            self.remaining.clear();
-            self.pos = 0;
-        }
+        self.remaining.clear();
+        self.pos = 0;
 
         self.write(waker, buf)
     }
