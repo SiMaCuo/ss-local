@@ -1,5 +1,5 @@
 #![feature(async_await, await_macro, futures_api)]
-// #![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 use clap::{App, Arg};
 use futures::executor;
 use log::info;
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     let matches = App::new("ss-local")
-        .version("0.1.1")
+        .version("0.1.2")
         .author("simacuo")
         .about("shadownsock implementation for learn rustlang")
         .arg(
