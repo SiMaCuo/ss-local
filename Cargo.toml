@@ -25,11 +25,14 @@ sodiumoxide = "^0.2.1"
 romio = "0.3.0-alpha.2"
 byteorder = "1.3"
 byte_string = "1.0.0"
-pcre2 = "0.1.1"
-ipnet = "2.0.0"
 clap = "2.32.0"
-parking_lot = "0.7.1"
+
+[target.'cfg(windows)'.dependencies]
+pcre2  = "0.1.1"
 fnv = "1.0.6"
+parking_lot = "0.7.1"
+ipnet = "2.0.0"
+
 
 [dependencies.futures]
 version = "0.3.0-alpha.13"
