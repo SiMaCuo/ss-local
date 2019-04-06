@@ -1,5 +1,5 @@
 #![feature(async_await, await_macro, futures_api)]
-#![windows_subsystem = "windows"]
+// #![windows_subsystem = "windows"]
 use clap::{App, Arg};
 use futures::executor;
 use log::info;

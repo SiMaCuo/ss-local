@@ -257,10 +257,14 @@ where
         &mut enc_data[enc_length_end..enc_length_end + buf.len()].copy_from_slice(buf);
         let _ = self.cipher.encrypt(&mut enc_data[enc_length_end..enc_cap]);
         let n = try_ready!(self.writer.poll_write(waker, &enc_data[..enc_cap]));
+        if n == 0 {
+            return Ready(Err(ErrorKind::WriteZero.into()));
+        }
         if n != enc_cap {
             self.remaining.reserve(enc_cap - n);
             unsafe {
-                self.remaining.bytes_mut().copy_from_slice(&enc_data[n..enc_cap]);
+                self.remaining.bytes_mut()[..enc_cap - n].copy_from_slice(&enc_data[n..enc_cap]);
+                self.remaining.advance_mut(enc_cap - n);
             }
         }
         self.amt += enc_cap;
