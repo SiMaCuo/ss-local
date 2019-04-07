@@ -1,0 +1,12 @@
+[Unit]
+Description=shadowsock client implmentation for learning rust
+After=network.target
+
+[Service]
+User=nobody
+WorkingDirectory=/home/nobody/ss-local/target/release
+ExecStart=/home/nobody/ss-local/target/release/ss-local
+Restart=on-abort
+
+[Install]
+WantedBy=multi-user.target
