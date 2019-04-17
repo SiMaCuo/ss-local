@@ -81,7 +81,7 @@ impl HandShakeResponse {
 
     async fn write_to<'a, W>(&'a self, w: &'a mut W) -> io::Result<()>
     where
-        W: AsyncWriteExt,
+        W: AsyncWriteExt + Unpin,
     {
         await!(w.write_all(&self.msg[..]))
     }
@@ -92,8 +92,8 @@ pub struct Socks5HandShake;
 impl Socks5HandShake {
     pub async fn deal_with<'a, R, W>(r: &'a mut R, w: &'a mut W) -> Option<Error>
     where
-        R: AsyncReadExt,
-        W: AsyncWriteExt,
+        R: AsyncReadExt + Unpin,
+        W: AsyncWriteExt + Unpin,
     {
         let mut leaky = [0u8; 16];
         let mut resp = HandShakeResponse::new(s5code::SOCKS5_METHOD_NO_ACCEPT);
@@ -254,7 +254,7 @@ impl Address {
     #[allow(dead_code)]
     pub async fn connect<'a, W>(&'a self, w: &'a mut W) -> io::Result<TcpStream>
     where
-        W: AsyncWriteExt,
+        W: AsyncWriteExt + Unpin,
     {
         let succ = [
             SOCKS5_VERSION,
@@ -397,8 +397,8 @@ pub struct TcpConnect;
 impl TcpConnect {
     pub async fn deal_with<'a, R, W>(r: &'a mut R, w: &'a mut W, leaky: &'a mut [u8]) -> io::Result<usize>
     where
-        R: AsyncReadExt,
-        W: AsyncWriteExt,
+        R: AsyncReadExt + Unpin,
+        W: AsyncWriteExt + Unpin,
     {
         let rlt = match unsafe { await!(r.read(&mut leaky[..])) } {
             Err(e) => Err(e),

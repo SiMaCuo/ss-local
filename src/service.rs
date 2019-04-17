@@ -23,6 +23,7 @@ use romio::tcp::{TcpListener, TcpStream};
 use std::{
     boxed::Box,
     io,
+    marker::Unpin,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{atomic::AtomicUsize, Arc},
@@ -63,7 +64,7 @@ fn acl_match_address(conf: &SsConfig, address: &socks5::Address) -> AclResult {
 
 async fn connect_sserver<'a, W>(addr: SocketAddr, w: &'a mut W) -> io::Result<TcpStream>
 where
-    W: AsyncWriteExt,
+    W: AsyncWriteExt + Unpin,
 {
     let succ = [
         SOCKS5_VERSION,
@@ -228,8 +229,8 @@ async fn proxy_copy<'a, R, W>(
     host_name: &'a str,
     peer_addr: &'a SocketAddr,
 ) where
-    R: AsyncRead,
-    W: AsyncWrite,
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
 {
     debug!("{} <- {}, two-way copying", host_name, peer_addr);
     let mark = Arc::new(AtomicUsize::new(1));
