@@ -13,11 +13,15 @@
 #
 #**********************************************************************
 
-[bypass_all]
 ### 默认直连 自己可以自定义
 ### [outbound_block_list] 禁止访问列表 在26行
 ### [bypass_list] 直连列表 禁止访问列表 在723多行
 ### [proxy_list] 代理列表 在1205多行
+
+#**********************************************************************
+[bypass_all]
+dl.google.com$
+golang.google.cn$
 
 #**********************************************************************
 [outbound_block_list]
@@ -5749,7 +5753,7 @@
 (^|\.)sss\.camp$
 (^|\.)sstmlt\.moe$
 (^|\.)sstmlt\.net$
-(^|\.)stackoverflow\.com$
+#(^|\.)stackoverflow\.com$
 (^|\.)stage64\.hk$
 (^|\.)standupfortibet\.org$
 (^|\.)stanford\.edu$

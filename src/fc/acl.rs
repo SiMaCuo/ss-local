@@ -13,7 +13,7 @@ use std::{
     path::Path,
 };
 
-const DEFAULT_RULE_LRU_SIZE: usize = 512;
+const DEFAULT_RULE_LRU_SIZE: usize = 256;
 struct LineClear<'a> {
     line: &'a mut String,
 }
@@ -203,6 +203,7 @@ impl Rules {
     }
 }
 
+#[derive(PartialEq)]
 pub enum AclResult {
     ByPass,
     RemoteProxy,
@@ -210,16 +211,18 @@ pub enum AclResult {
 }
 
 pub struct Acl {
+    bypass_hosts: RwLock<BypassHost>,
     black_list_rules: Rules,
-    white_list_rules: RwLock<BypassHost>,
+    white_list_rules: Rules,
     outbound_block_list_rules: Rules,
 }
 
 impl Acl {
     pub fn new() -> Self {
         Acl {
+            bypass_hosts: RwLock::new(BypassHost::with_capacity(DEFAULT_RULE_LRU_SIZE * 2)),
             black_list_rules: Rules::new(),
-            white_list_rules: RwLock::new(BypassHost::with_capacity(DEFAULT_RULE_LRU_SIZE * 2)),
+            white_list_rules: Rules::new(),
             outbound_block_list_rules: Rules::new(),
         }
     }
@@ -228,7 +231,6 @@ impl Acl {
         let fs = File::open(path)?;
         let mut buf = BufReader::new(fs);
         let mut rules: Option<&mut Rules> = None;
-        let mut white_list_rules = Rules::new();
 
         let pat: &[_] = &[' ', '\t', '\r', '\n'];
         let mut line = String::with_capacity(512);
@@ -250,7 +252,7 @@ impl Acl {
                 rules = Some(&mut self.black_list_rules);
                 continue;
             } else if l.starts_with("[bypass_all]") || l.starts_with("[white_list]") {
-                rules = Some(&mut white_list_rules);
+                rules = Some(&mut self.white_list_rules);
                 continue;
             }
 
@@ -263,22 +265,22 @@ impl Acl {
     }
 
     pub fn acl_match(&self, m: &str) -> AclResult {
-        {
-            if self.white_list_rules.read().is_match(&m) {
-                return AclResult::ByPass;
-            }
+        let result = if self.bypass_hosts.read().is_match(&m) {
+            return AclResult::ByPass;
+        } else if self.white_list_rules.is_match(&m) {
+            AclResult::ByPass
+        } else if self.outbound_block_list_rules.is_match(&m) {
+            AclResult::Reject
+        } else if self.black_list_rules.is_match(&m) {
+            AclResult::RemoteProxy
+        } else {
+            AclResult::ByPass
+        };
+
+        if result == AclResult::ByPass {
+            self.bypass_hosts.write().add_rule(m);
         }
 
-        if self.outbound_block_list_rules.is_match(&m) {
-            return AclResult::Reject;
-        }
-
-        if self.black_list_rules.is_match(&m) {
-            return AclResult::RemoteProxy;
-        }
-
-        self.white_list_rules.write().add_rule(m);
-
-        return AclResult::ByPass;
+        result
     }
 }
