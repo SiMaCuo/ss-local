@@ -1,5 +1,5 @@
 [Unit]
-Description=shadowsock client implmentation for learning rust
+Description=shadowsock client implementation for learning rust
 After=network.target
 
 [Service]
