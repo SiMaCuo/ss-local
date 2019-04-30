@@ -1,4 +1,4 @@
-#![feature(async_await, await_macro, futures_api)]
+#![feature(async_await, await_macro)]
 #![windows_subsystem = "windows"]
 use clap::{App, Arg};
 use futures::executor;
