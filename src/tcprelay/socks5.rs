@@ -83,7 +83,7 @@ impl HandShakeResponse {
     where
         W: AsyncWriteExt + Unpin,
     {
-        await!(w.write_all(&self.msg[..]))
+        w.write_all(&self.msg[..]).await
     }
 }
 
@@ -97,7 +97,7 @@ impl Socks5HandShake {
     {
         let mut leaky = [0u8; 16];
         let mut resp = HandShakeResponse::new(s5code::SOCKS5_METHOD_NO_ACCEPT);
-        let err = match unsafe { await!(r.read(&mut leaky[..])) } {
+        let err = match unsafe { r.read(&mut leaky[..]).await } {
             Ok(read_len) => {
                 if read_len < 2 {
                     return Some(Error::new(
@@ -131,7 +131,7 @@ impl Socks5HandShake {
             Err(e) => Some(e),
         };
 
-        match await!(resp.write_to(w)) {
+        match resp.write_to(w).await {
             Ok(_) => err,
             Err(e) => err.or(Some(e)),
         }
@@ -283,7 +283,7 @@ impl Address {
         ];
 
         let rlt = match self {
-            Address::SocketAddr(addr) => await!(TcpStream::connect(addr)),
+            Address::SocketAddr(addr) => TcpStream::connect(addr).await,
 
             Address::DomainName(ref dmname, port) => {
                 let mut v: Vec<net::SocketAddr> = Vec::new();
@@ -293,7 +293,7 @@ impl Address {
 
                 let mut conn_rlt = Err(ErrorKind::AddrNotAvailable.into());
                 for addr in v {
-                    match await!(TcpStream::connect(&addr)) {
+                    match TcpStream::connect(&addr).await {
                         Ok(s) => {
                             conn_rlt = Ok(s);
                             break;
@@ -317,11 +317,11 @@ impl Address {
                 };
                 fail[1] = code.as_u8();
 
-                let _ = await!(w.write_all(&fail));
+                let _ = w.write_all(&fail).await;
             }
 
             Ok(_) => {
-                let _ = await!(w.write_all(&succ));
+                let _ = w.write_all(&succ).await;
             }
         }
 
@@ -400,7 +400,7 @@ impl TcpConnect {
         R: AsyncReadExt + Unpin,
         W: AsyncWriteExt + Unpin,
     {
-        let rlt = match unsafe { await!(r.read(&mut leaky[..])) } {
+        let rlt = match unsafe { r.read(&mut leaky[..]).await } {
             Err(e) => Err(e),
 
             Ok(n) => {
@@ -418,7 +418,7 @@ impl TcpConnect {
                         0,
                         s5code::SOCKS5_ADDRTYPE_V4,
                     ];
-                    let _ = await!(w.write_all(&resp));
+                    let _ = w.write_all(&resp).await;
 
                     return Err(Error::new(ErrorKind::Other, "command not supported"));
                 }

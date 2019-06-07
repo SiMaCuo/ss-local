@@ -92,9 +92,9 @@ where
         0,
     ];
 
-    match await!(TcpStream::connect(&addr)) {
+    match TcpStream::connect(&addr).await {
         Ok(s) => {
-            let _ = await!(w.write_all(&succ));
+            let _ = w.write_all(&succ).await;
             Ok(s)
         }
 
@@ -107,7 +107,7 @@ where
             };
             fail[1] = code.as_u8();
 
-            let _ = await!(w.write_all(&fail));
+            let _ = w.write_all(&fail).await;
             Err(e)
         }
     }
@@ -115,7 +115,7 @@ where
 
 async fn exchange_salt(remote_stream: &mut TcpStream, m: CipherMethod) -> io::Result<(Bytes, Bytes)> {
     let local_salt = m.gen_salt();
-    if let Err(e) = await!(remote_stream.write_all(&local_salt[..])) {
+    if let Err(e) = remote_stream.write_all(&local_salt[..]).await {
         debug!("write local salt to remote stream failed {}", e);
 
         return Err(e);
@@ -123,7 +123,7 @@ async fn exchange_salt(remote_stream: &mut TcpStream, m: CipherMethod) -> io::Re
 
     let remote_salt = {
         let mut buf = [0u8; 128];
-        match await!(remote_stream.read(&mut buf[..])) {
+        match remote_stream.read(&mut buf[..]).await {
             Ok(n) => {
                 if n == m.salt_len() {
                     Bytes::from(&buf[0..n])
@@ -152,7 +152,7 @@ async fn proxy_shadowsock<'a>(
     address: &'a Address,
     url: &'a [u8],
 ) {
-    let mut remote_stream = match await!(connect_sserver(shared_conf.ss_server_addr(), lw)) {
+    let mut remote_stream = match connect_sserver(shared_conf.ss_server_addr(), lw).await {
         Ok(s) => {
             if shared_conf.keepalive().is_some() {
                 s.set_keepalive(shared_conf.keepalive()).unwrap();
@@ -166,7 +166,7 @@ async fn proxy_shadowsock<'a>(
         }
     };
     let peer_addr = remote_stream.local_addr().unwrap();
-    let (local_salt, remote_salt) = match await!(exchange_salt(&mut remote_stream, shared_conf.method())) {
+    let (local_salt, remote_salt) = match exchange_salt(&mut remote_stream, shared_conf.method()).await {
         Ok((ls, rs)) => (ls, rs),
         Err(e) => {
             debug!("exchange salt failed: {}", e);
@@ -182,7 +182,7 @@ async fn proxy_shadowsock<'a>(
         local_salt,
     );
 
-    if let Err(e) = await!(enc_writer.write_all(&url[..])) {
+    if let Err(e) = enc_writer.write_all(&url[..]).await {
         debug!("encrypt write url to ss server failed: {}", e);
 
         return;
@@ -196,23 +196,23 @@ async fn proxy_shadowsock<'a>(
     );
 
     let host_name = format!("{:?}", address);
-    await!(proxy_copy(
+    proxy_copy(
         lr,
         lw,
         &mut dec_reader,
         &mut enc_writer,
         &host_name,
         &peer_addr
-    ));
+    ).await;
 }
 
 async fn proxy_http<'a>(lr: &'a mut ReadHalf<TcpStream>, lw: &'a mut WriteHalf<TcpStream>, address: &'a Address) {
-    match await!(address.connect(lw)) {
+    match address.connect(lw).await {
         Ok(remote_stream) => {
             let host_name = format!("{:?}", address);
             let peer_addr = remote_stream.local_addr().unwrap();
             let (mut rr, mut rw) = remote_stream.split();
-            await!(proxy_copy(lr, lw, &mut rr, &mut rw, &host_name, &peer_addr));
+            proxy_copy(lr, lw, &mut rr, &mut rw, &host_name, &peer_addr).await;
         }
 
         Err(e) => {
@@ -248,8 +248,8 @@ async fn proxy_copy<'a, R, W>(
     );
     loop {
         select! {
-            _ = l2r => { let _ = await!(l2r.close()); },
-            _ = r2l => { let _ = await!(r2l.close()); },
+            _ = l2r => { let _ = l2r.close().await; },
+            _ = r2l => { let _ = r2l.close().await; },
             complete => {
                 debug!("{} <-> {} total done", host_name, peer_addr);
                 break;
@@ -260,14 +260,14 @@ async fn proxy_copy<'a, R, W>(
 
 async fn run_socks5_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
     let (mut lr, mut lw) = stream.split();
-    if let Some(e) = await!(socks5::Socks5HandShake::deal_with(&mut lr, &mut lw)) {
+    if let Some(e) = socks5::Socks5HandShake::deal_with(&mut lr, &mut lw).await {
         debug!("local socks5 handshake failed {}", e);
 
         return;
     }
 
     let mut url = [0u8; 320];
-    let url_len = match await!(socks5::TcpConnect::deal_with(&mut lr, &mut lw, &mut url[..])) {
+    let url_len = match socks5::TcpConnect::deal_with(&mut lr, &mut lw, &mut url[..]).await {
         Ok(n) => n,
         Err(e) => {
             debug!("local socks5 read address failed {}", e);
@@ -283,29 +283,29 @@ async fn run_socks5_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
             AclResult::Reject => debug!("{:?} reject", address),
             AclResult::ByPass => {
                 debug!("{:?} bypass", address);
-                await!(proxy_http(&mut lr, &mut lw, &address));
+                proxy_http(&mut lr, &mut lw, &address).await;
             }
             AclResult::RemoteProxy => {
                 info!("{:?}, proxy", address);
-                await!(proxy_shadowsock(
+                proxy_shadowsock(
                     &shared_conf,
                     &mut lr,
                     &mut lw,
                     &address,
                     &url[..url_len]
-                ));
+                ).await;
             }
         }
     }
     #[cfg(target_os = "linux")]
     {
-        await!(proxy_shadowsock(
+        proxy_shadowsock(
             &shared_conf,
             &mut lr,
             &mut lw,
             &address,
             &url[..url_len]
-        ));
+        ).await;
     }
 }
 
@@ -332,7 +332,7 @@ impl Service {
         let mut incoming = listener.incoming();
         println!("Listening on: {}", self.config.listen_addr());
         info!("Listening on: {}", self.config.listen_addr());
-        while let Some(Ok(stream)) = await!(incoming.next()) {
+        while let Some(Ok(stream)) = incoming.next().await {
             let fut = run_socks5_connection(self.config.clone(), stream);
             threadpool.spawn_obj(FutureObj::new(Box::pin(fut))).unwrap();
         }

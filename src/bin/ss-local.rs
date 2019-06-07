@@ -1,4 +1,4 @@
-#![feature(async_await, await_macro)]
+#![feature(async_await)]
 #![windows_subsystem = "windows"]
 use clap::{App, Arg};
 use futures::executor;
@@ -72,7 +72,7 @@ fn main() {
         .and_then(|mut srv| {
             executor::block_on(
                 async {
-                    await!(srv.serve());
+                    srv.serve().await;
                 },
             );
 
