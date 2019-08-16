@@ -26,6 +26,7 @@ romio = "0.3.0-alpha.2"
 byteorder = "1.3"
 byte_string = "1.0.0"
 clap = "2.32.0"
+futures-preview = { version = "=0.3.0-alpha.18", features = ["async-await", "nightly"] }
 
 [target.'cfg(windows)'.dependencies]
 pcre2  = "0.1.1"
@@ -34,9 +35,9 @@ parking_lot = "0.7.1"
 ipnet = "2.0.0"
 
 
-[dependencies.futures]
-version = "0.3.0-alpha.13"
-package = "futures-preview"
+#[dependencies.futures]
+#version = "0.3.0-alpha.18"
+#package = "futures-preview"
 
 
 

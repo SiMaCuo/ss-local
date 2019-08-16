@@ -9,7 +9,7 @@ use futures::{
         Context,
         Poll::{self, *},
     },
-    try_ready,
+    ready,
 };
 use std::{io::ErrorKind, pin::Pin};
 
@@ -66,7 +66,7 @@ where
     fn read_length(&mut self, cx: &mut Context) -> Poll<Result<usize, io::Error>> {
         let expect_len = 2 + self.tag_len;
         loop {
-            let ciphertext = try_ready!(self.reader.fill_buf(cx, expect_len));
+            let ciphertext = ready!(self.reader.fill_buf(cx, expect_len))?;
             if ciphertext.len() >= expect_len {
                 self.len[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
                 let _ = self.cipher.decrypt(&mut self.len[..expect_len]);
@@ -87,7 +87,7 @@ where
         debug_assert!(expect_len <= SS_TCP_CHUNK_LEN);
 
         loop {
-            let ciphertext = try_ready!(self.reader.fill_buf(cx, expect_len));
+            let ciphertext = ready!(self.reader.fill_buf(cx, expect_len))?;
             if ciphertext.len() >= expect_len {
                 let out_len = out.len();
                 let rlt = if out_len >= expect_len {
@@ -258,7 +258,7 @@ where
         let enc_cap = enc_length_end + buf.len() + self.tag_len;
         &mut enc_data[enc_length_end..enc_length_end + buf.len()].copy_from_slice(buf);
         let _ = self.cipher.encrypt(&mut enc_data[enc_length_end..enc_cap]);
-        let n = try_ready!(Pin::new(&mut self.writer).poll_write(cx, &enc_data[..enc_cap]));
+        let n = ready!(Pin::new(&mut self.writer).poll_write(cx, &enc_data[..enc_cap]))?;
         if n == 0 {
             return Ready(Err(ErrorKind::WriteZero.into()));
         }
@@ -280,7 +280,7 @@ where
             let boundary = (i + 1) * self.payload_len;
             let end = if boundary > buf.len() { buf.len() } else { boundary };
 
-            let n = try_ready!(self.write_payload(cx, &buf[i * self.payload_len..end]));
+            let n = ready!(self.write_payload(cx, &buf[i * self.payload_len..end]))?;
             total_write += n;
             // May wirte zero error, may not be fully written later
             if n == 0 {
@@ -300,13 +300,13 @@ where
         let this = &mut *self;
         let remain_len = this.remaining.len();
         while this.pos < remain_len {
-            this.pos += try_ready!(Pin::new(&mut this.writer).poll_write(cx, &this.remaining[this.pos..remain_len]));
+            this.pos += ready!(Pin::new(&mut this.writer).poll_write(cx, &this.remaining[this.pos..remain_len]))?;
         }
 
         this.remaining.clear();
         this.pos = 0;
 
-        self.write(cx, buf)
+        this.write(cx, buf)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {

@@ -4,7 +4,6 @@ use futures::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, Close},
     ready,
     task::{Context, Poll},
-    try_ready,
 };
 use std::{
     boxed::Box,
@@ -130,7 +129,7 @@ where
             // data and finish the transfer.
             // done with the entire transfer.
             if this.pos == this.cap && this.read_done && !this.write_done {
-                let _ = try_ready!(Pin::new(&mut this.writer).poll_flush(cx));
+                let _ = ready!(Pin::new(&mut this.writer).poll_flush(cx))?;
                 this.write_done = true;
             }
 
@@ -145,8 +144,8 @@ where
 
 impl<R, W> FusedFuture for CopyInto<'_, R, W>
 where
-    R: AsyncRead + ?Sized,
-    W: AsyncWrite + ?Sized,
+    R: AsyncRead + ?Sized + Unpin,
+    W: AsyncWrite + ?Sized + Unpin,
 {
     fn is_terminated(&self) -> bool {
         self.write_done

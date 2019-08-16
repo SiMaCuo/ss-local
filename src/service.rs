@@ -13,7 +13,7 @@ use bytes::Bytes;
 use futures::{
     executor::ThreadPoolBuilder,
     future::FutureObj,
-    io::{ReadHalf, WriteHalf},
+    io::{ReadHalf, WriteHalf, AsyncWriteExt},
     prelude::*,
     select,
     task::Spawn,

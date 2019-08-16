@@ -4,7 +4,7 @@ use futures::{
         Context,
         Poll::{self, *},
     },
-    try_ready,
+    ready,
 };
 use std::{cmp, pin::Pin, ptr};
 
@@ -53,7 +53,7 @@ impl<R: AsyncRead + Unpin> BufReader<R> {
         if !self.eof {
             if self.pos >= self.cap {
                 debug_assert!(self.pos == self.cap);
-                self.cap = try_ready!(Pin::new(&mut self.inner).poll_read(cx, &mut self.buf));
+                self.cap = ready!(Pin::new(&mut self.inner).poll_read(cx, &mut self.buf))?;
                 self.eof = self.cap == 0;
                 self.pos = 0;
             } else if expect_len > self.cap - self.pos {
@@ -66,7 +66,7 @@ impl<R: AsyncRead + Unpin> BufReader<R> {
                 self.pos = 0;
                 self.cap = move_len;
 
-                let read_len = try_ready!(Pin::new(&mut self.inner).poll_read(cx, &mut self.buf[move_len..]));
+                let read_len = ready!(Pin::new(&mut self.inner).poll_read(cx, &mut self.buf[move_len..]))?;
                 self.eof = read_len == 0;
                 self.cap += read_len;
             }
