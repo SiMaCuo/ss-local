@@ -1,4 +1,3 @@
-#![feature(async_await)]
 #![feature(box_syntax)]
 #![feature(read_initializer)]
 #![allow(dead_code)]
