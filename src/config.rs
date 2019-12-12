@@ -48,7 +48,7 @@ pub struct SsConfig {
 impl SsConfig {
     pub fn new(dir: PathBuf, path: &Path) -> Result<Self, Error> {
         let json = ConfigJson::new(path)?;
-        let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), json.local_port);
+        let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), json.local_port);
         let server_addr = format!("{}:{}", json.server_ip, json.server_port).parse().unwrap();
         let keeplive = if json.keepalive == 0 {
             None
