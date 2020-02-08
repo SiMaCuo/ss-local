@@ -270,7 +270,7 @@ async fn run_socks5_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
     let url_len = match socks5::TcpConnect::deal_with(&mut lr, &mut lw, &mut url[..]).await {
         Ok(n) => n,
         Err(e) => {
-            debug!("local socks5 read address failed {}", e);
+            info!("local socks5 read address failed {}", e);
 
             return;
         }

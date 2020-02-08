@@ -403,11 +403,19 @@ impl TcpConnect {
         let rlt = match unsafe { r.read(&mut leaky[..]).await } {
             Err(e) => Err(e),
 
-            Ok(n) => {
-                debug_assert!(n >= 4);
+            Ok(n) if n > 4 => {
                 let mut stream = Cursor::new(&leaky[..n]);
                 let (ver, cmd, _) = (stream.get_u8(), stream.get_u8(), stream.get_u8());
                 if ver != SOCKS5_VERSION {
+                    let resp = [
+                        SOCKS5_VERSION,
+                        s5code::SOCKS5_REPLY_GENERAL_FAILURE,
+                        0,
+                        s5code::SOCKS5_ADDRTYPE_V4,
+                    ];
+
+                    let _ = w.write_all(&resp).await;
+
                     return Err(Error::new(ErrorKind::Other, "tcp connect invalid socks5 version"));
                 }
 
@@ -418,12 +426,25 @@ impl TcpConnect {
                         0,
                         s5code::SOCKS5_ADDRTYPE_V4,
                     ];
+
                     let _ = w.write_all(&resp).await;
 
-                    return Err(Error::new(ErrorKind::Other, "command not supported"));
+                    return Err(Error::new(ErrorKind::Other, "tcp connect command not supported"));
                 }
 
                 Ok(n)
+            },
+
+            Ok(_) => {
+                    let resp = [
+                        SOCKS5_VERSION,
+                        s5code::SOCKS5_REPLY_CONNECT_REFUSED,
+                        0,
+                        s5code::SOCKS5_ADDRTYPE_V4,
+                    ];
+                    let _ = w.write_all(&resp).await;
+
+                    Err(Error::new(ErrorKind::Other, "tcp connect not enough data"))
             }
         };
 
