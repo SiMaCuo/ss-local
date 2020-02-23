@@ -400,33 +400,28 @@ impl TcpConnect {
         R: AsyncReadExt + Unpin,
         W: AsyncWriteExt + Unpin,
     {
+        let mut resp = [SOCKS5_VERSION, s5code::SOCKS5_REPLY_SUCCEEDED, 0, s5code::SOCKS5_ADDRTYPE_V4];
+
         let rlt = match unsafe { r.read(&mut leaky[..]).await } {
-            Err(e) => Err(e),
+            Err(e) => {
+                    resp[1] = s5code::SOCKS5_REPLY_GENERAL_FAILURE;
+                    let _ = w.write_all(&resp).await;
+
+                    Err(e)
+            },
 
             Ok(n) if n > 4 => {
                 let mut stream = Cursor::new(&leaky[..n]);
                 let (ver, cmd, _) = (stream.get_u8(), stream.get_u8(), stream.get_u8());
                 if ver != SOCKS5_VERSION {
-                    let resp = [
-                        SOCKS5_VERSION,
-                        s5code::SOCKS5_REPLY_GENERAL_FAILURE,
-                        0,
-                        s5code::SOCKS5_ADDRTYPE_V4,
-                    ];
-
+                    resp[1] = s5code::SOCKS5_REPLY_GENERAL_FAILURE;
                     let _ = w.write_all(&resp).await;
 
                     return Err(Error::new(ErrorKind::Other, "tcp connect invalid socks5 version"));
                 }
 
                 if Command::from_u8(cmd).unwrap() != Command::Connect {
-                    let resp = [
-                        SOCKS5_VERSION,
-                        s5code::SOCKS5_REPLY_COMMAND_NOT_SUPPORTED,
-                        0,
-                        s5code::SOCKS5_ADDRTYPE_V4,
-                    ];
-
+                    resp[1] = s5code::SOCKS5_REPLY_COMMAND_NOT_SUPPORTED;
                     let _ = w.write_all(&resp).await;
 
                     return Err(Error::new(ErrorKind::Other, "tcp connect command not supported"));
@@ -434,14 +429,16 @@ impl TcpConnect {
 
                 Ok(n)
             },
+            
+            Ok(n) if n == 0 => {
+                    resp[1] = s5code::SOCKS5_REPLY_CONNECT_REFUSED;
+                    let _ = w.write_all(&resp).await;
 
+                    Err(Error::new(ErrorKind::UnexpectedEof, "connection closed"))
+            },
+                
             Ok(_) => {
-                    let resp = [
-                        SOCKS5_VERSION,
-                        s5code::SOCKS5_REPLY_CONNECT_REFUSED,
-                        0,
-                        s5code::SOCKS5_ADDRTYPE_V4,
-                    ];
+                    resp[1] = s5code::SOCKS5_REPLY_CONNECT_DISALLOWED;
                     let _ = w.write_all(&resp).await;
 
                     Err(Error::new(ErrorKind::Other, "tcp connect not enough data"))
