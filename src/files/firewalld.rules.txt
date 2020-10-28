@@ -1,16 +1,13 @@
-firewall-cmd --zone=external --add-interface=enp1s0f1
+firewall-cmd --zone=external --add-interface=enp1s0f0
 firewall-cmd --zone=external --add-masquerade
 firewall-cmd --set-default-zone=internal
-firewall-cmd --direct --add-rule ipv4 nat POSTROUTING 0 -o enp1s0f1 -j MASQUERADE
-firewall-cmd --direct --add-rule ipv4 filter FORWARD 0 -i enp1s0f2 -o enp1s0f1 -j ACCEPT
-firewall-cmd --direct --add-rule ipv4 filter FORWARD 0 -i enp1s0f1 -o enp1s0f2 -m state --state RELATED,ESTABLISHED -j ACCEPT
-firewall-cmd --direct --add-rule ipv4 filter FORWARD 0 -i enp1s0f3 -o enp1s0f1 -j ACCEPT
-firewall-cmd --direct --add-rule ipv4 filter FORWARD 0 -i enp1s0f1 -o enp1s0f3 -m state --state RELATED,ESTABLISHED -j ACCEPT
-firewall-cmd --direct --add-rule ipv4 filter FORWARD 0 -i enp1s0f4 -o enp1s0f1 -j ACCEPT
-firewall-cmd --direct --add-rule ipv4 filter FORWARD 0 -i enp1s0f1 -o enp1s0f4 -m state --state RELATED,ESTABLISHED -j ACCEPT
-firewall-cmd --direct --add-rule ipv4 filter FORWARD 0 -i enp3s0 -o enp1s0f1 -j ACCEPT
-firewall-cmd --direct --add-rule ipv4 filter FORWARD 0 -i enp1s0f1 -o enp3s0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-firewall-cmd --direct --add-rule ipv4 nat PREROUTING 0 -p tcp -m set --match-set gfwlist dst -j REDIRECT --to-port 1080
+firewall-cmd --zone=internal --add-service=ssh,mdns,samba-client,dhcpv6-client,dns dhcp
+firewall-cmd --zone=internal --add-port=1080/tcp
+firewall-cmd --direct --add-rule ipv4 nat POSTROUTING 0 -o enp1s0f0 -j MASQUERADE
+firewall-cmd --direct --add-rule ipv4 filter FORWARD 0 -i br0 -o enp1s0f0 -j ACCEPT
+firewall-cmd --direct --add-rule ipv4 filter FORWARD 0 -i enp1s0f0 -o br0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+firewall-cmd --direct --add-rule ipv4 nat PREROUTING 0 -i br0 -p tcp -m multiport --dport 80,443 -m set --match-set gfwlist dst -j REDIRECT --to-port 1080
+firewall-cmd --new-ipset=gfwlist --type=hash:ip --option=timeout=864000
+firewall-cmd --new-ipset=cnlist --type=hash:ip --option=timeout=864000
 firewall-cmd --runtime-to-permanent
-
-firewall-cmd --permanent --new-ipset=gfwlist --type=hash:ip --option=timeout=86400
+firewall-cmd --reload  
