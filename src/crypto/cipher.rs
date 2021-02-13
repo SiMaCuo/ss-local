@@ -2,14 +2,9 @@ use bytes::{BufMut, Bytes, BytesMut};
 use crypto2::{
     aeadcipher::{AeadCipher, Chacha20Poly1305},
     blockmode::Aes256Gcm,
+    kdf::HkdfSha1,
 };
 use rand::{self, RngCore};
-use ring::{
-    // aead::{AES_256_GCM, CHACHA20_POLY1305},
-    digest::SHA1,
-    hkdf,
-    hmac::SigningKey,
-};
 
 use sodiumoxide::crypto::aead::xchacha20poly1305_ietf;
 use std::{
@@ -59,10 +54,9 @@ impl CipherMethod {
 
     pub fn derive_key(password: &[u8], key_len: usize) -> Bytes {
         debug_assert!(key_len > 0);
-        let signing_key = SigningKey::new(&SHA1, &[0u8; 0][..]);
         let mut key = BytesMut::with_capacity(key_len);
         unsafe {
-            hkdf::extract_and_expand(&signing_key, password, &[0u8; 0][..], key.bytes_mut());
+            HkdfSha1::oneshot(&[0u8;0][..], password, &[0u8; 0][..], key.bytes_mut());
             key.advance_mut(key_len);
         }
         key.freeze()
@@ -82,13 +76,12 @@ impl CipherMethod {
     }
 
     pub fn make_secret_key(&self, key: &[u8], salt: &[u8]) -> Bytes {
-        let sign_salt = SigningKey::new(&SHA1, salt);
         let key_len = self.key_len();
         let mut skey = BytesMut::with_capacity(key_len);
         unsafe {
             skey.set_len(key_len);
         }
-        hkdf::extract_and_expand(&sign_salt, key, b"ss-subkey", &mut skey);
+        HkdfSha1::oneshot(&salt, key, b"ss-subkey", &mut skey);
 
         skey.freeze()
     }

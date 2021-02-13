@@ -1,10 +1,8 @@
 pub mod aead;
 pub mod cipher;
-mod ring;
 mod sodium;
 mod crypto2;
 
-// use self::ring::RingAeadCipher;
 use self::crypto2::Crypto2AeadCipher;
 use aead::{AeadDecryptor, AeadEncryptor};
 use cipher::CipherMethod::{self, *};
