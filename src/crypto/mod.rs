@@ -2,8 +2,10 @@ pub mod aead;
 pub mod cipher;
 mod ring;
 mod sodium;
+mod crypto2;
 
-use self::ring::RingAeadCipher;
+// use self::ring::RingAeadCipher;
+use self::crypto2::Crypto2AeadCipher;
 use aead::{AeadDecryptor, AeadEncryptor};
 use cipher::CipherMethod::{self, *};
 use sodium::SodiumAeadCipher;
@@ -14,7 +16,7 @@ pub type BoxAeadEncryptor = Box<dyn AeadEncryptor + std::marker::Send + 'static>
 
 pub fn new_aead_decryptor(method: CipherMethod, key_derive_from_pass: &[u8], salt: &[u8]) -> BoxAeadDecryptor {
     match method {
-        Aes256Gcm | Chacha20IetfPoly1305 => box RingAeadCipher::new(method, key_derive_from_pass, salt, false),
+        Aes256Gcm | Chacha20IetfPoly1305 => box Crypto2AeadCipher::new(method, key_derive_from_pass, salt),
 
         XChacha20IetfPoly1305 => box SodiumAeadCipher::new(method, key_derive_from_pass, salt),
     }
@@ -22,7 +24,7 @@ pub fn new_aead_decryptor(method: CipherMethod, key_derive_from_pass: &[u8], sal
 
 pub fn new_aead_encryptor(method: CipherMethod, key_derive_from_pass: &[u8], salt: &[u8]) -> BoxAeadEncryptor {
     match method {
-        Aes256Gcm | Chacha20IetfPoly1305 => box RingAeadCipher::new(method, key_derive_from_pass, salt, true),
+        Aes256Gcm | Chacha20IetfPoly1305 => box Crypto2AeadCipher::new(method, key_derive_from_pass, salt),
 
         XChacha20IetfPoly1305 => box SodiumAeadCipher::new(method, key_derive_from_pass, salt),
     }

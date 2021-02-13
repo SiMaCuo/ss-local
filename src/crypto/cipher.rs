@@ -1,11 +1,16 @@
-use bytes::{Bytes, BytesMut, BufMut};
+use bytes::{BufMut, Bytes, BytesMut};
+use crypto2::{
+    aeadcipher::{AeadCipher, Chacha20Poly1305},
+    blockmode::Aes256Gcm,
+};
 use rand::{self, RngCore};
 use ring::{
-    aead::{AES_256_GCM, CHACHA20_POLY1305},
+    // aead::{AES_256_GCM, CHACHA20_POLY1305},
     digest::SHA1,
     hkdf,
     hmac::SigningKey,
 };
+
 use sodiumoxide::crypto::aead::xchacha20poly1305_ietf;
 use std::{
     io::{Error, ErrorKind},
@@ -26,16 +31,16 @@ pub enum CipherMethod {
 impl CipherMethod {
     pub fn key_len(&self) -> usize {
         match self {
-            CipherMethod::Aes256Gcm => AES_256_GCM.key_len(),
-            CipherMethod::Chacha20IetfPoly1305 => CHACHA20_POLY1305.key_len(),
+            CipherMethod::Aes256Gcm => Aes256Gcm::aead_key_len(),
+            CipherMethod::Chacha20IetfPoly1305 => Chacha20Poly1305::aead_key_len(),
             CipherMethod::XChacha20IetfPoly1305 => xchacha20poly1305_ietf::KEYBYTES,
         }
     }
 
     pub fn tag_len(&self) -> usize {
         match self {
-            CipherMethod::Aes256Gcm => AES_256_GCM.tag_len(),
-            CipherMethod::Chacha20IetfPoly1305 => CHACHA20_POLY1305.tag_len(),
+            CipherMethod::Aes256Gcm => Aes256Gcm::aead_tag_len(),
+            CipherMethod::Chacha20IetfPoly1305 => Chacha20Poly1305::aead_tag_len(),
             CipherMethod::XChacha20IetfPoly1305 => xchacha20poly1305_ietf::TAGBYTES,
         }
     }
@@ -46,8 +51,8 @@ impl CipherMethod {
 
     pub fn nonce_len(&self) -> usize {
         match self {
-            CipherMethod::Aes256Gcm => AES_256_GCM.nonce_len(),
-            CipherMethod::Chacha20IetfPoly1305 => CHACHA20_POLY1305.nonce_len(),
+            CipherMethod::Aes256Gcm => Aes256Gcm::NONCE_LEN,
+            CipherMethod::Chacha20IetfPoly1305 => Chacha20Poly1305::NONCE_LEN,
             CipherMethod::XChacha20IetfPoly1305 => xchacha20poly1305_ietf::NONCEBYTES,
         }
     }
@@ -57,10 +62,10 @@ impl CipherMethod {
         let signing_key = SigningKey::new(&SHA1, &[0u8; 0][..]);
         let mut key = BytesMut::with_capacity(key_len);
         unsafe {
-            hkdf::extract_and_expand(&signing_key, password, &[0u8;0][..], key.bytes_mut());
+            hkdf::extract_and_expand(&signing_key, password, &[0u8; 0][..], key.bytes_mut());
             key.advance_mut(key_len);
         }
-        key.freeze() 
+        key.freeze()
     }
 
     pub fn gen_salt(&self) -> Bytes {
