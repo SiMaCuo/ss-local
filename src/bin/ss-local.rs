@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 use clap::{App, Arg};
-use futures::executor;
+use smol::block_on;
 use log::info;
 use log4rs;
 use shadowsocks::service;
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     let matches = App::new("ss-local")
-        .version("0.1.2")
+        .version("0.1.3")
         .author("simacuo")
         .about("shadownsock implementation for learn rustlang")
         .arg(
@@ -69,7 +69,7 @@ fn main() {
             err
         })
         .and_then(|mut srv| {
-            executor::block_on(
+            block_on(
                 async {
                     srv.serve().await;
                 },

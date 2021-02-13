@@ -1,10 +1,12 @@
 use bytes::Buf;
-use futures::io::{AsyncReadExt, AsyncWriteExt};
-use romio::tcp::TcpStream;
+use smol::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{self, TcpStream, IpAddr, Ipv4Addr, Ipv6Addr},
+};
 use std::{
     fmt::{self, Debug, Formatter},
     io::{self, Cursor, Error, ErrorKind},
-    net::{self, IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs},
+    net::ToSocketAddrs,
 };
 
 pub const SOCKS5_VERSION: u8 = 5;
@@ -283,7 +285,7 @@ impl Address {
         ];
 
         let rlt = match self {
-            Address::SocketAddr(addr) => TcpStream::connect(addr).await,
+            Address::SocketAddr(addr) => TcpStream::connect(*addr).await,
 
             Address::DomainName(ref dmname, port) => {
                 let mut v: Vec<net::SocketAddr> = Vec::new();
@@ -293,7 +295,7 @@ impl Address {
 
                 let mut conn_rlt = Err(ErrorKind::AddrNotAvailable.into());
                 for addr in v {
-                    match TcpStream::connect(&addr).await {
+                    match TcpStream::connect(addr).await {
                         Ok(s) => {
                             conn_rlt = Ok(s);
                             break;
@@ -400,15 +402,20 @@ impl TcpConnect {
         R: AsyncReadExt + Unpin,
         W: AsyncWriteExt + Unpin,
     {
-        let mut resp = [SOCKS5_VERSION, s5code::SOCKS5_REPLY_SUCCEEDED, 0, s5code::SOCKS5_ADDRTYPE_V4];
+        let mut resp = [
+            SOCKS5_VERSION,
+            s5code::SOCKS5_REPLY_SUCCEEDED,
+            0,
+            s5code::SOCKS5_ADDRTYPE_V4,
+        ];
 
         let rlt = match unsafe { r.read(&mut leaky[..]).await } {
             Err(e) => {
-                    resp[1] = s5code::SOCKS5_REPLY_GENERAL_FAILURE;
-                    let _ = w.write_all(&resp).await;
+                resp[1] = s5code::SOCKS5_REPLY_GENERAL_FAILURE;
+                let _ = w.write_all(&resp).await;
 
-                    Err(e)
-            },
+                Err(e)
+            }
 
             Ok(n) if n > 4 => {
                 let mut stream = Cursor::new(&leaky[..n]);
@@ -428,20 +435,20 @@ impl TcpConnect {
                 }
 
                 Ok(n)
-            },
-            
+            }
+
             Ok(n) if n == 0 => {
-                    resp[1] = s5code::SOCKS5_REPLY_CONNECT_REFUSED;
-                    let _ = w.write_all(&resp).await;
+                resp[1] = s5code::SOCKS5_REPLY_CONNECT_REFUSED;
+                let _ = w.write_all(&resp).await;
 
-                    Err(Error::new(ErrorKind::UnexpectedEof, "connection closed"))
-            },
-                
+                Err(Error::new(ErrorKind::UnexpectedEof, "connection closed"))
+            }
+
             Ok(_) => {
-                    resp[1] = s5code::SOCKS5_REPLY_CONNECT_DISALLOWED;
-                    let _ = w.write_all(&resp).await;
+                resp[1] = s5code::SOCKS5_REPLY_CONNECT_DISALLOWED;
+                let _ = w.write_all(&resp).await;
 
-                    Err(Error::new(ErrorKind::Other, "tcp connect not enough data"))
+                Err(Error::new(ErrorKind::Other, "tcp connect not enough data"))
             }
         };
 

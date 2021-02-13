@@ -6,25 +6,20 @@ use super::{
         socks5::{self, s5code, Address, Reply, SOCKS5_VERSION},
     },
 };
+use bytes::Bytes;
+use futures::select;
+use log::{debug, info};
+use smol::{
+    io::{split, AsyncWriteExt, ReadHalf, WriteHalf},
+    net::{SocketAddr, TcpListener, TcpStream},
+    prelude::*,
+};
 use crate::crypto::cipher::CipherMethod;
 #[cfg(target_os = "windows")]
 use crate::fc::acl::AclResult;
-use bytes::Bytes;
-use futures::{
-    executor::ThreadPoolBuilder,
-    future::FutureObj,
-    io::{ReadHalf, WriteHalf, AsyncWriteExt},
-    prelude::*,
-    select,
-    task::Spawn,
-};
-use log::{debug, info};
-use romio::tcp::{TcpListener, TcpStream};
 use std::{
-    boxed::Box,
     io,
     marker::Unpin,
-    net::SocketAddr,
     path::{Path, PathBuf},
     sync::{atomic::AtomicUsize, Arc},
 };
@@ -92,7 +87,7 @@ where
         0,
     ];
 
-    match TcpStream::connect(&addr).await {
+    match TcpStream::connect(addr).await {
         Ok(s) => {
             let _ = w.write_all(&succ).await;
             Ok(s)
@@ -153,12 +148,7 @@ async fn proxy_shadowsock<'a>(
     url: &'a [u8],
 ) {
     let mut remote_stream = match connect_sserver(shared_conf.ss_server_addr(), lw).await {
-        Ok(s) => {
-            if shared_conf.keepalive().is_some() {
-                s.set_keepalive(shared_conf.keepalive()).unwrap();
-            }
-            s
-        }
+        Ok(s) => s,
 
         Err(e) => {
             debug!("connect ss server failed {}", e);
@@ -174,7 +164,7 @@ async fn proxy_shadowsock<'a>(
         }
     };
 
-    let (rr, rw) = remote_stream.split();
+    let (rr, rw) = split(remote_stream);
     let mut enc_writer = AeadEncryptorWriter::new(
         rw,
         shared_conf.method(),
@@ -196,14 +186,7 @@ async fn proxy_shadowsock<'a>(
     );
 
     let host_name = format!("{:?}", address);
-    proxy_copy(
-        lr,
-        lw,
-        &mut dec_reader,
-        &mut enc_writer,
-        &host_name,
-        &peer_addr
-    ).await;
+    proxy_copy(lr, lw, &mut dec_reader, &mut enc_writer, &host_name, &peer_addr).await;
 }
 
 async fn proxy_http<'a>(lr: &'a mut ReadHalf<TcpStream>, lw: &'a mut WriteHalf<TcpStream>, address: &'a Address) {
@@ -211,7 +194,7 @@ async fn proxy_http<'a>(lr: &'a mut ReadHalf<TcpStream>, lw: &'a mut WriteHalf<T
         Ok(remote_stream) => {
             let host_name = format!("{:?}", address);
             let peer_addr = remote_stream.local_addr().unwrap();
-            let (mut rr, mut rw) = remote_stream.split();
+            let (mut rr, mut rw) = split(remote_stream);
             proxy_copy(lr, lw, &mut rr, &mut rw, &host_name, &peer_addr).await;
         }
 
@@ -259,7 +242,7 @@ async fn proxy_copy<'a, R, W>(
 }
 
 async fn run_socks5_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
-    let (mut lr, mut lw) = stream.split();
+    let (mut lr, mut lw) = split(stream);
     if let Some(e) = socks5::Socks5HandShake::deal_with(&mut lr, &mut lw).await {
         debug!("local socks5 handshake failed {}", e);
 
@@ -287,25 +270,13 @@ async fn run_socks5_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
             }
             AclResult::RemoteProxy => {
                 info!("{:?}, proxy", address);
-                proxy_shadowsock(
-                    &shared_conf,
-                    &mut lr,
-                    &mut lw,
-                    &address,
-                    &url[..url_len]
-                ).await;
+                proxy_shadowsock(&shared_conf, &mut lr, &mut lw, &address, &url[..url_len]).await;
             }
         }
     }
     #[cfg(target_os = "linux")]
     {
-        proxy_shadowsock(
-            &shared_conf,
-            &mut lr,
-            &mut lw,
-            &address,
-            &url[..url_len]
-        ).await;
+        proxy_shadowsock(&shared_conf, &mut lr, &mut lw, &address, &url[..url_len]).await;
     }
 }
 
@@ -323,18 +294,20 @@ impl Service {
     }
 
     pub async fn serve(&mut self) {
-        let mut threadpool = ThreadPoolBuilder::new()
-            .pool_size(self.config.romio_threadpool_size())
-            .create()
-            .unwrap();
-        let mut listener = TcpListener::bind(&self.config.listen_addr())
-            .unwrap_or_else(|e| panic!("listen on {} failed {}", self.config.listen_addr(), e));
-        let mut incoming = listener.incoming();
-        println!("Listening on: {}", self.config.listen_addr());
-        info!("Listening on: {}", self.config.listen_addr());
-        while let Some(Ok(stream)) = incoming.next().await {
-            let fut = run_socks5_connection(self.config.clone(), stream);
-            threadpool.spawn_obj(FutureObj::new(Box::pin(fut))).unwrap();
+        match TcpListener::bind(self.config.listen_addr()).await {
+            Ok(listener) => {
+                let mut incoming = listener.incoming();
+                println!("Listening on: {}", self.config.listen_addr());
+                info!("Listening on: {}", self.config.listen_addr());
+                while let Some(Ok(stream)) = incoming.next().await {
+                    let fut = run_socks5_connection(self.config.clone(), stream);
+                    smol::spawn(fut).detach();
+                }
+            }
+
+            Err(e) => {
+                info!("Listen on: {}, failed {:?}", self.config.listen_addr(), e);
+            }
         }
     }
 }

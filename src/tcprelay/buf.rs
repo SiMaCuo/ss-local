@@ -1,9 +1,9 @@
-use futures::{
+use core::task::{
+    Context,
+    Poll::{self, *},
+};
+use smol::{
     io::{AsyncRead, Error},
-    task::{
-        Context,
-        Poll::{self, *},
-    },
     ready,
 };
 use std::{cmp, pin::Pin, ptr};
@@ -27,7 +27,7 @@ impl<R: AsyncRead + Unpin> BufReader<R> {
         unsafe {
             let mut buffer = Vec::with_capacity(cap);
             buffer.set_len(cap);
-            inner.initializer().initialize(&mut buffer);
+            // inner.initializer().initialize(&mut buffer);
             BufReader {
                 inner,
                 buf: buffer.into_boxed_slice(),

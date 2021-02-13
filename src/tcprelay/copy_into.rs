@@ -1,10 +1,8 @@
 use super::buf::DEFAULT_BUF_SIZE;
-use futures::{
-    future::{FusedFuture, Future},
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt, Close},
-    ready,
-    task::{Context, Poll},
-};
+use core::task::{Context, Poll};
+use futures::future::FusedFuture;
+use smol::{io::CloseFuture, prelude::*, ready};
+
 use std::{
     boxed::Box,
     io,
@@ -15,6 +13,7 @@ use std::{
         Arc,
     },
 };
+
 /// A future which will copy all data from a reader into a writer.
 ///
 /// Created by the [`copy_into`] function, this future will resolve to the number of
@@ -60,7 +59,7 @@ where
         }
     }
 
-    pub fn close(&mut self) -> Close<'_, W>
+    pub fn close(&mut self) -> CloseFuture<'_, W>
     where
         Self: Unpin,
     {
@@ -154,8 +153,8 @@ where
 
 pub fn copy_into<'a, R, W>(r: &'a mut R, w: &'a mut W, quit_mark: Arc<AtomicUsize>, name: String) -> CopyInto<'a, R, W>
 where
-    R: AsyncRead + ?Sized + Unpin,
-    W: AsyncWrite + ?Sized + Unpin,
+    R: smol::io::AsyncRead + ?Sized + Unpin,
+    W: smol::io::AsyncWrite + ?Sized + Unpin,
 {
     CopyInto::new(r, w, quit_mark, name)
 }

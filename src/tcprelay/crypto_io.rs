@@ -2,15 +2,11 @@ use super::{buf::BufReader, SS_TCP_CHUNK_LEN};
 use crate::crypto::{cipher::CipherMethod, new_aead_decryptor, new_aead_encryptor, BoxAeadDecryptor, BoxAeadEncryptor};
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{BufMut, Bytes, BytesMut};
-use futures::{
-    io,
-    prelude::*,
-    task::{
-        Context,
-        Poll::{self, *},
-    },
-    ready,
+use core::task::{
+    Context,
+    Poll::{self, *},
 };
+use smol::{io, prelude::*, ready};
 use std::{io::ErrorKind, pin::Pin};
 
 // +--------------+---------------+--------------+------------+
