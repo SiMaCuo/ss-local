@@ -33,5 +33,7 @@ fnv = "1.0.6"
 parking_lot = "0.7.1"
 ipnet = "2.0.0"
 
+[profile.release]
+lto = true
 
 
