@@ -1,11 +1,9 @@
 {        
     "local_port": 12345,
-    "local_threadpool_size": 2,
     "server_ip": "127.0.0.1",
     "server_port": 23456,
     "password": "12345",
     "method": "aes-256-gcm",
-    "keepalive": 60,
 	"acl": "files/gfwlist-banAD.acl"
 }
 
