@@ -10,7 +10,7 @@ use crate::crypto::cipher::CipherMethod;
 #[cfg(target_os = "windows")]
 use crate::fc::acl::AclResult;
 use bytes::Bytes;
-use futures::join;
+use futures::select;
 use log::{debug, info};
 use smol::{
     io::{split, AsyncWriteExt, ReadHalf, WriteHalf},
@@ -229,8 +229,16 @@ async fn proxy_copy<'a, R, W>(
         mark.clone(),
         format!("{} -> {}", host_name, peer_addr),
     );
-    let _ = join!(l2r.close(), r2l.close());
-    debug!("{} <-> {} total done", host_name, peer_addr);
+    loop {
+        select! {
+            _ = l2r => { let _ = l2r.close().await; },
+            _ = r2l => { let _ = r2l.close().await; },
+            complete => {
+                debug!("{} <-> {} total done", host_name, peer_addr);
+                break;
+            },
+        }
+    }
 }
 
 async fn run_socks5_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
