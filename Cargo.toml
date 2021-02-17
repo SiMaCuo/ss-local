@@ -40,5 +40,6 @@ cipher-ring = ["ring"]
 
 [profile.release]
 lto = true
+incremental = false
 
 

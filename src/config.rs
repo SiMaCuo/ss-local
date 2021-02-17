@@ -37,7 +37,6 @@ pub struct SsConfig {
     method: CipherMethod,
     #[cfg(target_os = "windows")]
     acl: Acl,
-    dir: PathBuf,
 }
 
 impl SsConfig {
@@ -65,7 +64,6 @@ impl SsConfig {
             enc_key: CipherMethod::derive_key(json.password.as_bytes(), 32),
             method: json.method.parse().unwrap(),
             acl: Acl::new(),
-            dir,
         };
         #[cfg(target_os = "windows")]
         s.acl.init(acl_path)?;
@@ -76,7 +74,6 @@ impl SsConfig {
             server_addr,
             enc_key: CipherMethod::derive_key(json.password.as_bytes(), 32),
             method: json.method.parse().unwrap(),
-            dir,
         };
 
         Ok(s)

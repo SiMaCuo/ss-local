@@ -1,4 +1,3 @@
-use bytes::{Bytes, BytesMut};
 #[cfg(feature = "cipher-crypto2")]
 use crypto2::{
     aeadcipher::{AeadCipher, Chacha20Poly1305},
@@ -12,6 +11,7 @@ use ring::{
     hkdf,
 };
 
+use bytes::{Bytes, BytesMut};
 use rand::{self, RngCore};
 use sodiumoxide::crypto::aead::xchacha20poly1305_ietf;
 use std::{
