@@ -64,7 +64,6 @@ impl SsConfig {
             server_addr,
             enc_key: CipherMethod::derive_key(json.password.as_bytes(), 32),
             method: json.method.parse().unwrap(),
-            #[cfg(target_os = "windows")]
             acl: Acl::new(),
             dir,
         };
