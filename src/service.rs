@@ -189,6 +189,7 @@ async fn proxy_shadowsock<'a>(
     proxy_copy(lr, lw, &mut dec_reader, &mut enc_writer, &host_name, &peer_addr).await;
 }
 
+#[cfg(target_os = "windows")]
 async fn proxy_http<'a>(lr: &'a mut ReadHalf<TcpStream>, lw: &'a mut WriteHalf<TcpStream>, address: &'a Address) {
     match address.connect(lw).await {
         Ok(remote_stream) => {
