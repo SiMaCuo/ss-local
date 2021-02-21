@@ -10,10 +10,7 @@ use crypto2::{
 };
 use log::error;
 use sodiumoxide::utils::increment_le;
-use std::{
-    io::{self, Error, ErrorKind},
-    ptr,
-};
+use std::io::{self, Error, ErrorKind};
 
 enum Crypto2Cipher {
     Aes(blockmode::Aes256Gcm),
@@ -28,18 +25,14 @@ pub struct Crypto2AeadCipher {
 
 impl Crypto2AeadCipher {
     pub fn new(method: CipherMethod, key_derive_from_pass: &[u8], salt: &[u8]) -> Self {
-        let nonce_len = method.nonce_len();
-        let mut nonce = BytesMut::with_capacity(nonce_len);
-        unsafe {
-            nonce.set_len(nonce_len);
-            ptr::write_bytes(nonce.as_mut_ptr(), 0, nonce_len);
-        }
-
         let secret_key = method.make_secret_key(key_derive_from_pass, salt);
         let cipher = Crypto2AeadCipher::new_cryptor(method, &secret_key);
-        let tag_len = method.tag_len();
 
-        Crypto2AeadCipher { cipher, nonce, tag_len }
+        Crypto2AeadCipher {
+            cipher,
+            nonce: method.nonce(),
+            tag_len: method.tag_len(),
+        }
     }
 
     fn new_cryptor(m: CipherMethod, key: &Bytes) -> Crypto2Cipher {

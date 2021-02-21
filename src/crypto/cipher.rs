@@ -7,11 +7,11 @@ use crypto2::{
 
 #[cfg(feature = "cipher-ring")]
 use ring::{
-    aead::{AES_256_GCM, CHACHA20_POLY1305},
+    aead::{self, AES_256_GCM, CHACHA20_POLY1305},
     hkdf,
 };
 
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use rand::{self, RngCore};
 use sodiumoxide::crypto::aead::xchacha20poly1305_ietf;
 use std::{
@@ -63,19 +63,41 @@ impl CipherMethod {
         }
     }
 
-    pub fn nonce_len(&self) -> usize {
+    pub fn nonce(&self) -> BytesMut {
         #[cfg(feature = "cipher-crypto2")]
         match self {
-            CipherMethod::Aes256Gcm => Aes256Gcm::NONCE_LEN,
-            CipherMethod::Chacha20IetfPoly1305 => Chacha20Poly1305::NONCE_LEN,
-            CipherMethod::XChacha20IetfPoly1305 => xchacha20poly1305_ietf::NONCEBYTES,
+            CipherMethod::Aes256Gcm => {
+                let mut nonce = BytesMut::with_capacity(Aes256Gcm::NONCE_LEN);
+                nonce.put(&[0u8; Aes256Gcm::NONCE_LEN][..]);
+                nonce
+            }
+
+            CipherMethod::Chacha20IetfPoly1305 => {
+                let mut nonce = BytesMut::with_capacity(Chacha20Poly1305::NONCE_LEN);
+                nonce.put(&[0u8; Chacha20Poly1305::NONCE_LEN][..]);
+                nonce
+            }
+
+            CipherMethod::XChacha20IetfPoly1305 => {
+                let mut nonce = BytesMut::with_capacity(xchacha20poly1305_ietf::NONCEBYTES);
+                nonce.put(&[0u8; xchacha20poly1305_ietf::NONCEBYTES][..]);
+                nonce
+            }
         }
 
         #[cfg(feature = "cipher-ring")]
         match self {
-            CipherMethod::Aes256Gcm => AES_256_GCM.nonce_len(),
-            CipherMethod::Chacha20IetfPoly1305 => CHACHA20_POLY1305.nonce_len(),
-            CipherMethod::XChacha20IetfPoly1305 => xchacha20poly1305_ietf::NONCEBYTES,
+            CipherMethod::Aes256Gcm | CipherMethod::Chacha20IetfPoly1305 => {
+                let mut nonce = BytesMut::with_capacity(aead::NONCE_LEN);
+                nonce.put(&[0u8; aead::NONCE_LEN][..]);
+                nonce
+            }
+
+            CipherMethod::XChacha20IetfPoly1305 => {
+                let mut nonce = BytesMut::with_capacity(xchacha20poly1305_ietf::NONCEBYTES);
+                nonce.put(&[0u8; xchacha20poly1305_ietf::NONCEBYTES][..]);
+                nonce
+            }
         }
     }
 

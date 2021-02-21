@@ -2,17 +2,11 @@ use super::{
     aead::{AeadDecryptor, AeadEncryptor},
     cipher::CipherMethod,
 };
-use bytes::BytesMut;
 use log::error;
 use sodiumoxide::crypto::aead::xchacha20poly1305_ietf::*;
-use std::{
-    io::{self, Error, ErrorKind},
-    ptr,
-};
+use std::io::{self, Error, ErrorKind};
 
-#[allow(dead_code)]
 pub struct SodiumAeadCipher {
-    method: CipherMethod,
     secret_key: Key,
     nonce: Nonce,
     tag_len: usize,
@@ -22,20 +16,12 @@ impl SodiumAeadCipher {
     pub fn new(method: CipherMethod, key_derive_from_pass: &[u8], salt: &[u8]) -> SodiumAeadCipher {
         match method {
             CipherMethod::XChacha20IetfPoly1305 => {
-                let nonce_len = method.nonce_len();
-                let mut nonce = BytesMut::with_capacity(nonce_len);
-                unsafe {
-                    nonce.set_len(nonce_len);
-                    ptr::write_bytes(nonce.as_mut_ptr(), 0, nonce_len);
-                }
-
+                let nonce = method.nonce();
                 let secret_key = Key::from_slice(&method.make_secret_key(&key_derive_from_pass, &salt)).unwrap();
-                let tag_len = method.tag_len();
                 SodiumAeadCipher {
-                    method,
                     secret_key,
                     nonce: Nonce::from_slice(&nonce).unwrap(),
-                    tag_len,
+                    tag_len: method.tag_len(),
                 }
             }
 

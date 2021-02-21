@@ -27,7 +27,6 @@ impl<R: AsyncRead + Unpin> BufReader<R> {
         unsafe {
             let mut buffer = Vec::with_capacity(cap);
             buffer.set_len(cap);
-            // inner.initializer().initialize(&mut buffer);
             BufReader {
                 inner,
                 buf: buffer.into_boxed_slice(),
