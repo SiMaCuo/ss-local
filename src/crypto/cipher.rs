@@ -64,33 +64,22 @@ impl CipherMethod {
     }
 
     pub fn nonce(&self) -> BytesMut {
-        #[cfg(feature = "cipher-crypto2")]
-        match self {
-            CipherMethod::Aes256Gcm => {
-                let mut nonce = BytesMut::with_capacity(Aes256Gcm::NONCE_LEN);
-                nonce.put(&[0u8; Aes256Gcm::NONCE_LEN][..]);
-                nonce
-            }
-
-            CipherMethod::Chacha20IetfPoly1305 => {
-                let mut nonce = BytesMut::with_capacity(Chacha20Poly1305::NONCE_LEN);
-                nonce.put(&[0u8; Chacha20Poly1305::NONCE_LEN][..]);
-                nonce
-            }
-
-            CipherMethod::XChacha20IetfPoly1305 => {
-                let mut nonce = BytesMut::with_capacity(xchacha20poly1305_ietf::NONCEBYTES);
-                nonce.put(&[0u8; xchacha20poly1305_ietf::NONCEBYTES][..]);
-                nonce
-            }
-        }
-
-        #[cfg(feature = "cipher-ring")]
         match self {
             CipherMethod::Aes256Gcm | CipherMethod::Chacha20IetfPoly1305 => {
-                let mut nonce = BytesMut::with_capacity(aead::NONCE_LEN);
-                nonce.put(&[0u8; aead::NONCE_LEN][..]);
-                nonce
+                #[cfg(feature = "cipher-crypto2")]
+                {
+                    assert_eq!(Aes256Gcm::NONCE_LEN, Chacha20Poly1305::NONCE_LEN);
+                    let mut nonce = BytesMut::with_capacity(Aes256Gcm::NONCE_LEN);
+                    nonce.put(&[0u8; Aes256Gcm::NONCE_LEN][..]);
+                    nonce
+                }
+
+                #[cfg(feature = "cipher-ring")]
+                {
+                    let mut nonce = BytesMut::with_capacity(aead::NONCE_LEN);
+                    nonce.put(&[0u8; aead::NONCE_LEN][..]);
+                    nonce
+                }
             }
 
             CipherMethod::XChacha20IetfPoly1305 => {
