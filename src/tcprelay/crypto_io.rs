@@ -87,7 +87,7 @@ where
             if ciphertext.len() >= expect_len {
                 let out_len = out.len();
                 let rlt = if out_len >= expect_len {
-                    &mut out[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
+                    out[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
                     let _ = self.cipher.decrypt(&mut out[..expect_len]);
 
                     Ok(data_len)
@@ -95,10 +95,10 @@ where
                     self.dec[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
                     let _ = self.cipher.decrypt(&mut self.dec[..expect_len]);
                     if out_len >= data_len {
-                        &mut out[..data_len].copy_from_slice(&self.dec[..data_len]);
+                        out[..data_len].copy_from_slice(&self.dec[..data_len]);
                         Ok(data_len)
                     } else {
-                        &mut out[..].copy_from_slice(&self.dec[..out_len]);
+                        out[..].copy_from_slice(&self.dec[..out_len]);
                         self.cap = data_len;
                         self.pos = out_len;
                         Ok(out_len)
@@ -178,7 +178,7 @@ where
         let this = &mut *self;
         if this.cap - this.pos > 0 {
             let len = std::cmp::min(this.cap - this.pos, buf.len());
-            &mut buf[..len].copy_from_slice(&this.dec[this.pos..this.pos + len]);
+            buf[..len].copy_from_slice(&this.dec[this.pos..this.pos + len]);
             this.pos += len;
 
             if this.pos >= this.cap {
@@ -252,7 +252,7 @@ where
         let _ = self.cipher.encrypt(&mut enc_data[..enc_length_end]);
 
         let enc_cap = enc_length_end + buf.len() + self.tag_len;
-        &mut enc_data[enc_length_end..enc_length_end + buf.len()].copy_from_slice(buf);
+        enc_data[enc_length_end..enc_length_end + buf.len()].copy_from_slice(buf);
         let _ = self.cipher.encrypt(&mut enc_data[enc_length_end..enc_cap]);
         let n = ready!(Pin::new(&mut self.writer).poll_write(cx, &enc_data[..enc_cap]))?;
         if n == 0 {
