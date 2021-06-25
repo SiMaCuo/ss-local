@@ -99,7 +99,7 @@ impl Socks5HandShake {
     {
         let mut leaky = [0u8; 16];
         let mut resp = HandShakeResponse::new(s5code::SOCKS5_METHOD_NO_ACCEPT);
-        let err = match unsafe { r.read(&mut leaky[..]).await } {
+        let err = match r.read(&mut leaky[..]).await  {
             Ok(read_len) => {
                 if read_len < 2 {
                     return Some(Error::new(
@@ -409,7 +409,7 @@ impl TcpConnect {
             s5code::SOCKS5_ADDRTYPE_V4,
         ];
 
-        let rlt = match unsafe { r.read(&mut leaky[..]).await } {
+        let rlt = match r.read(&mut leaky[..]).await {
             Err(e) => {
                 resp[1] = s5code::SOCKS5_REPLY_GENERAL_FAILURE;
                 let _ = w.write_all(&resp).await;
