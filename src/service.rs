@@ -44,7 +44,7 @@ fn acl_match_address(conf: &SsConfig, address: &socks5::Address) -> AclResult {
                 }
 
                 std::net::IpAddr::V6(ip) => {
-                    if ip.is_unique_local() || ip.is_unicast_link_local() || ip.is_unicast_site_local() {
+                    if ip.is_unique_local() || ip.is_unicast_link_local() {
                         return AclResult::Reject;
                     }
                 }
