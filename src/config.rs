@@ -2,7 +2,7 @@ use crate::crypto::cipher::CipherMethod;
 #[cfg(target_os = "windows")]
 use crate::fc::acl::{Acl, AclResult};
 use bytes::Bytes;
-use serde_derive::{Deserialize, Serialize};
+use serde_derive::Deserialize;
 use std::{
     fs::File,
     io::{Error, ErrorKind},
@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug)]
 struct ConfigJson {
     local_port: u16,
     server_ip: String,
