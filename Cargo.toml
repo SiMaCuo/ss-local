@@ -25,7 +25,8 @@ futures = "~0.3.12"
 byteorder = "1.3"
 byte_string = "1.0.0"
 clap = "2.32.0"
-crypto2 = {version = "~0.1", optional = true}
+# crypto2 = {version = "~0.1", optional = true}
+crypto2 = {git = "https://github.com/shadowsocks/crypto2.git", optional = true}
 ring = {version = "~0.16.20", optional = true}
 
 [target.'cfg(windows)'.dependencies]
@@ -40,7 +41,11 @@ cipher-crypto2 = ["crypto2"]
 cipher-ring = ["ring"]
 
 [profile.release]
-lto = true
+debug = false
+debug-assertions = false
+overflow-checks = false
+lto = "fat"
 incremental = false
+codegen-units = 1
 
 

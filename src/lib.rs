@@ -1,5 +1,3 @@
-#![feature(ip)]
-
 pub mod service;
 
 mod config;
