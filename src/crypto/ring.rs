@@ -5,7 +5,6 @@ use super::aead::{AeadDecryptor, AeadEncryptor};
 use byte_string::ByteStr;
 use bytes::{Bytes, BytesMut};
 use log::error;
-use sodiumoxide::utils::increment_le;
 use std::io::{self, Error, ErrorKind};
 
 pub struct RingAeadCipher {
@@ -39,15 +38,15 @@ impl RingAeadCipher {
 
                 UnboundKey::new(&CHACHA20_POLY1305, &key).unwrap()
             }
-
-            _ => unimplemented!(),
         };
 
         LessSafeKey::new(unbound_key)
     }
 
     fn increse_nonce(&mut self) {
-        increment_le(&mut self.nonce);
+        unsafe {
+            libsodium_sys::sodium_increment(self.nonce.as_mut_ptr(), self.nonce.len());
+        }
     }
 }
 

@@ -13,7 +13,6 @@ use ring::{
 
 use bytes::{BufMut, Bytes, BytesMut};
 use rand::{self, RngCore};
-use sodiumoxide::crypto::aead::xchacha20poly1305_ietf;
 use std::{
     io::{Error, ErrorKind},
     str::FromStr,
@@ -21,13 +20,11 @@ use std::{
 
 const CIPHER_AES_256_GCM: &str = "aes-256-gcm";
 const CIPHER_CHACHA20_IETF_POLY1305: &str = "chacha20-ietf-poly1305";
-const CIPHER_XCHACHA20_IETF_POLY1305: &str = "xchacha20-ietf-poly1305";
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum CipherMethod {
     Aes256Gcm,
     Chacha20IetfPoly1305,
-    XChacha20IetfPoly1305,
 }
 
 impl CipherMethod {
@@ -36,14 +33,12 @@ impl CipherMethod {
         match self {
             CipherMethod::Aes256Gcm => Aes256Gcm::aead_key_len(),
             CipherMethod::Chacha20IetfPoly1305 => Chacha20Poly1305::aead_key_len(),
-            CipherMethod::XChacha20IetfPoly1305 => xchacha20poly1305_ietf::KEYBYTES,
         }
 
         #[cfg(feature = "cipher-ring")]
         match self {
             CipherMethod::Aes256Gcm => AES_256_GCM.key_len(),
             CipherMethod::Chacha20IetfPoly1305 => CHACHA20_POLY1305.key_len(),
-            CipherMethod::XChacha20IetfPoly1305 => xchacha20poly1305_ietf::KEYBYTES,
         }
     }
 
@@ -52,14 +47,12 @@ impl CipherMethod {
         match self {
             CipherMethod::Aes256Gcm => Aes256Gcm::aead_tag_len(),
             CipherMethod::Chacha20IetfPoly1305 => Chacha20Poly1305::aead_tag_len(),
-            CipherMethod::XChacha20IetfPoly1305 => xchacha20poly1305_ietf::TAGBYTES,
         }
 
         #[cfg(feature = "cipher-ring")]
         match self {
             CipherMethod::Aes256Gcm => AES_256_GCM.tag_len(),
             CipherMethod::Chacha20IetfPoly1305 => CHACHA20_POLY1305.tag_len(),
-            CipherMethod::XChacha20IetfPoly1305 => xchacha20poly1305_ietf::TAGBYTES,
         }
     }
 
@@ -80,12 +73,6 @@ impl CipherMethod {
                     nonce.put(&[0u8; aead::NONCE_LEN][..]);
                     nonce
                 }
-            }
-
-            CipherMethod::XChacha20IetfPoly1305 => {
-                let mut nonce = BytesMut::with_capacity(xchacha20poly1305_ietf::NONCEBYTES);
-                nonce.put(&[0u8; xchacha20poly1305_ietf::NONCEBYTES][..]);
-                nonce
             }
         }
     }
@@ -162,7 +149,6 @@ impl FromStr for CipherMethod {
         match s {
             CIPHER_AES_256_GCM => Ok(CipherMethod::Aes256Gcm),
             CIPHER_CHACHA20_IETF_POLY1305 => Ok(CipherMethod::Chacha20IetfPoly1305),
-            CIPHER_XCHACHA20_IETF_POLY1305 => Ok(CipherMethod::XChacha20IetfPoly1305),
             _ => Err(Error::new(ErrorKind::Other, "unknown cipher method")),
         }
     }

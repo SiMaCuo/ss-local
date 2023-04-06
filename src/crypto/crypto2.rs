@@ -9,7 +9,6 @@ use crypto2::{
     blockmode,
 };
 use log::error;
-use sodiumoxide::utils::increment_le;
 use std::io::{self, Error, ErrorKind};
 
 enum Crypto2Cipher {
@@ -40,15 +39,15 @@ impl Crypto2AeadCipher {
             CipherMethod::Aes256Gcm => Crypto2Cipher::Aes(blockmode::Aes256Gcm::aead_new(key)),
 
             CipherMethod::Chacha20IetfPoly1305 => Crypto2Cipher::Chacha20(Chacha20Poly1305::aead_new(key)),
-
-            _ => unimplemented!(),
         };
 
         cipher
     }
 
     fn increse_nonce(&mut self) {
-        increment_le(&mut self.nonce);
+        unsafe {
+            libsodium_sys::sodium_increment(self.nonce.as_mut_ptr(), self.nonce.len());
+        }
     }
 }
 
