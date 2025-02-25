@@ -287,7 +287,7 @@ impl Address {
         let rlt = match self {
             Address::SocketAddr(addr) => TcpStream::connect(*addr).await,
 
-            Address::DomainName(ref dmname, port) => {
+            Address::DomainName(dmname, port) => {
                 let mut v: Vec<net::SocketAddr> = Vec::new();
                 if let Ok(addrs) = format!("{}:{}", dmname, port).to_socket_addrs() {
                     v = addrs.collect();
@@ -334,8 +334,8 @@ impl Address {
 impl Debug for Address {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            Address::SocketAddr(ref addr) => write!(f, "{}", addr),
-            Address::DomainName(ref dmname, ref port) => write!(f, "{}:{}", dmname, port),
+            Address::SocketAddr(addr) => write!(f, "{}", addr),
+            Address::DomainName(dmname, port) => write!(f, "{}:{}", dmname, port),
         }
     }
 }
