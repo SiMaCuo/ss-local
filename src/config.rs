@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize)]
 struct ConfigJson {
     local_port: u16,
     server_ip: String,

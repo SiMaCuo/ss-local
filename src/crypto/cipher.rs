@@ -21,7 +21,7 @@ use std::{
 const CIPHER_AES_256_GCM: &str = "aes-256-gcm";
 const CIPHER_CHACHA20_IETF_POLY1305: &str = "chacha20-ietf-poly1305";
 
-#[derive(PartialEq, Clone, Copy, Debug)]
+#[derive(PartialEq, Clone, Copy)]
 pub enum CipherMethod {
     Aes256Gcm,
     Chacha20IetfPoly1305,

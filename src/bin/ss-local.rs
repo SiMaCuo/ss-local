@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     let matches = App::new("ss-local")
-        .version("0.1.3")
+        .version("0.1.4")
         .author("simacuo")
         .about("shadownsock implementation for learn rustlang")
         .arg(
