@@ -24,16 +24,12 @@ impl<R: AsyncRead + Unpin> BufReader<R> {
     }
 
     pub fn with_capacity(cap: usize, inner: R) -> BufReader<R> {
-        unsafe {
-            let mut buffer = Vec::with_capacity(cap);
-            buffer.set_len(cap);
-            BufReader {
-                inner,
-                buf: buffer.into_boxed_slice(),
-                pos: 0,
-                cap: 0,
-                eof: false,
-            }
+        BufReader {
+            inner,
+            buf: Box::from(vec![0u8;cap]),
+            pos: 0,
+            cap: 0,
+            eof: false,
         }
     }
 
@@ -56,16 +52,12 @@ impl<R: AsyncRead + Unpin> BufReader<R> {
                 self.eof = self.cap == 0;
                 self.pos = 0;
             } else if expect_len > self.cap - self.pos {
-                let move_len = self.cap - self.pos;
-                unsafe {
-                    let src = (&self.buf[..]).as_ptr().offset(self.pos as isize);
-                    let dst = (&mut self.buf[..]).as_mut_ptr();
-                    ptr::copy(src, dst, move_len);
-                }
+                self.buf.copy_within(self.pos..self.cap, 0);
+                
                 self.pos = 0;
-                self.cap = move_len;
+                self.cap = self.cap - self.pos;
 
-                let read_len = ready!(Pin::new(&mut self.inner).poll_read(cx, &mut self.buf[move_len..]))?;
+                let read_len = ready!(Pin::new(&mut self.inner).poll_read(cx, &mut self.buf[self.cap..]))?;
                 self.eof = read_len == 0;
                 self.cap += read_len;
             }

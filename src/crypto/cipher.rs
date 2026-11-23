@@ -42,19 +42,14 @@ impl CipherMethod {
     pub fn nonce(&self) -> BytesMut {
         match self {
             CipherMethod::Aes256Gcm | CipherMethod::Chacha20IetfPoly1305 => {
-                let mut nonce = BytesMut::with_capacity(aead::NONCE_LEN);
-                nonce.put(&[0u8; aead::NONCE_LEN][..]);
-                nonce
+                BytesMut::zeroed(aead::NONCE_LEN)
             }
         }
     }
 
     pub fn derive_key(password: &[u8], key_len: usize) -> Bytes {
         debug_assert!(key_len > 0);
-        let mut key = BytesMut::with_capacity(key_len);
-        unsafe {
-            key.set_len(key_len);
-        }
+        let mut key = BytesMut::zeroed(key_len);
 
         hkdf::Salt::new(hkdf::HKDF_SHA1_FOR_LEGACY_USE_ONLY, &[])
             .extract(password)
@@ -67,11 +62,7 @@ impl CipherMethod {
     }
 
     pub fn make_secret_key(&self, key: &[u8], salt: &[u8]) -> Bytes {
-        let key_len = self.key_len();
-        let mut skey = BytesMut::with_capacity(key_len);
-        unsafe {
-            skey.set_len(key_len);
-        }
+        let mut skey = BytesMut::zeroed(self.key_len());
 
         hkdf::Salt::new(hkdf::HKDF_SHA1_FOR_LEGACY_USE_ONLY, salt)
             .extract(key)
@@ -88,11 +79,7 @@ impl CipherMethod {
     }
 
     pub fn gen_salt(&self) -> Bytes {
-        let salt_len = self.salt_len();
-        let mut salt = BytesMut::with_capacity(salt_len);
-        unsafe {
-            salt.set_len(salt_len);
-        }
+        let mut salt = BytesMut::zeroed(self.salt_len());
 
         let mut rng = rand::thread_rng();
         rng.fill_bytes(&mut salt);

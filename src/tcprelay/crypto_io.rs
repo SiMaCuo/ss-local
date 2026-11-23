@@ -41,16 +41,12 @@ where
 {
     pub fn new(r: R, method: CipherMethod, key_derive_from_pass: Bytes, salt: Bytes) -> Self {
         let tag_len = method.tag_len();
-        let mut v = Vec::with_capacity(2 + tag_len);
-        unsafe {
-            v.set_len(2 + tag_len);
-        }
         AeadDecryptedReader {
             reader: BufReader::new(r),
             read_step: ReadingStep::Length,
             cipher: new_aead_decryptor(method, &key_derive_from_pass, &salt),
             dec: Box::from([0u8; SS_TCP_CHUNK_LEN]),
-            len: v.into_boxed_slice(),
+            len: Box::from(vec![0u8; 2+tag_len]),
             pos: 0,
             cap: 0,
             amt: 0,
@@ -177,7 +173,7 @@ where
         debug_assert!(buf.len() > 0);
         let this = &mut *self;
         if this.cap - this.pos > 0 {
-            let len = std::cmp::min(this.cap - this.pos, buf.len());
+            let len = min(this.cap - this.pos, buf.len());
             buf[..len].copy_from_slice(&this.dec[this.pos..this.pos + len]);
             this.pos += len;
 
@@ -190,10 +186,8 @@ where
             return Ready(Ok(len));
         }
 
-        if this.poll.is_some() {
-            unsafe {
-                return std::ptr::replace(&mut this.poll, None).unwrap();
-            }
+        if let Some(poll) = this.poll.take() {
+            return poll;
         }
 
         let (poll, copy_len) = this.decrypt_data(cx, buf);
@@ -259,11 +253,7 @@ where
             return Ready(Err(ErrorKind::WriteZero.into()));
         }
         if n != enc_cap {
-            self.remaining.reserve(enc_cap - n);
-            unsafe {
-                self.remaining.bytes_mut()[..enc_cap - n].copy_from_slice(&enc_data[n..enc_cap]);
-                self.remaining.advance_mut(enc_cap - n);
-            }
+            self.remaining.extend_from_slice(&enc_data[n..enc_cap]);
         }
         self.amt += enc_cap;
 
