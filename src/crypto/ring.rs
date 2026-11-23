@@ -1,5 +1,10 @@
+#[cfg(feature = "cipher-aws-lc")]
+use aws_lc_rs as crypto;
+#[cfg(feature = "cipher-ring")]
+use ring as crypto;
+
 use super::cipher::CipherMethod::{self, *};
-use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, CHACHA20_POLY1305};
+use crypto::aead::{AES_256_GCM, Aad, CHACHA20_POLY1305, LessSafeKey, Nonce, UnboundKey};
 
 use super::aead::{AeadDecryptor, AeadEncryptor};
 use byte_string::ByteStr;

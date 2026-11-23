@@ -1,12 +1,9 @@
-#[cfg(feature = "cipher-crypto2")]
-use crypto2::{
-    aeadcipher::{AeadCipher, Chacha20Poly1305},
-    blockmode::Aes256Gcm,
-    kdf::HkdfSha1,
-};
-
+#[cfg(feature = "cipher-aws-lc")]
+use aws_lc_rs as cipher;
 #[cfg(feature = "cipher-ring")]
-use ring::{
+use ring as cipher;
+
+use cipher::{
     aead::{self, AES_256_GCM, CHACHA20_POLY1305},
     hkdf,
 };
@@ -29,13 +26,6 @@ pub enum CipherMethod {
 
 impl CipherMethod {
     pub fn key_len(&self) -> usize {
-        #[cfg(feature = "cipher-crypto2")]
-        match self {
-            CipherMethod::Aes256Gcm => Aes256Gcm::aead_key_len(),
-            CipherMethod::Chacha20IetfPoly1305 => Chacha20Poly1305::aead_key_len(),
-        }
-
-        #[cfg(feature = "cipher-ring")]
         match self {
             CipherMethod::Aes256Gcm => AES_256_GCM.key_len(),
             CipherMethod::Chacha20IetfPoly1305 => CHACHA20_POLY1305.key_len(),
@@ -43,13 +33,6 @@ impl CipherMethod {
     }
 
     pub fn tag_len(&self) -> usize {
-        #[cfg(feature = "cipher-crypto2")]
-        match self {
-            CipherMethod::Aes256Gcm => Aes256Gcm::aead_tag_len(),
-            CipherMethod::Chacha20IetfPoly1305 => Chacha20Poly1305::aead_tag_len(),
-        }
-
-        #[cfg(feature = "cipher-ring")]
         match self {
             CipherMethod::Aes256Gcm => AES_256_GCM.tag_len(),
             CipherMethod::Chacha20IetfPoly1305 => CHACHA20_POLY1305.tag_len(),
@@ -59,20 +42,9 @@ impl CipherMethod {
     pub fn nonce(&self) -> BytesMut {
         match self {
             CipherMethod::Aes256Gcm | CipherMethod::Chacha20IetfPoly1305 => {
-                #[cfg(feature = "cipher-crypto2")]
-                {
-                    assert_eq!(Aes256Gcm::NONCE_LEN, Chacha20Poly1305::NONCE_LEN);
-                    let mut nonce = BytesMut::with_capacity(Aes256Gcm::NONCE_LEN);
-                    nonce.put(&[0u8; Aes256Gcm::NONCE_LEN][..]);
-                    nonce
-                }
-
-                #[cfg(feature = "cipher-ring")]
-                {
-                    let mut nonce = BytesMut::with_capacity(aead::NONCE_LEN);
-                    nonce.put(&[0u8; aead::NONCE_LEN][..]);
-                    nonce
-                }
+                let mut nonce = BytesMut::with_capacity(aead::NONCE_LEN);
+                nonce.put(&[0u8; aead::NONCE_LEN][..]);
+                nonce
             }
         }
     }
@@ -83,20 +55,14 @@ impl CipherMethod {
         unsafe {
             key.set_len(key_len);
         }
-        #[cfg(feature = "cipher-crypto2")]
-        {
-            HkdfSha1::oneshot(&[0u8; 0][..], password, &[0u8; 0][..], &mut key);
-        }
 
-        #[cfg(feature = "cipher-ring")]
-        {
-            hkdf::Salt::new(hkdf::HKDF_SHA1_FOR_LEGACY_USE_ONLY, &[])
-                .extract(password)
-                .expand(&[], &AES_256_GCM)
-                .unwrap()
-                .fill(&mut key)
-                .unwrap();
-        }
+        hkdf::Salt::new(hkdf::HKDF_SHA1_FOR_LEGACY_USE_ONLY, &[])
+            .extract(password)
+            .expand(&[], &AES_256_GCM)
+            .unwrap()
+            .fill(&mut key)
+            .unwrap();
+
         key.freeze()
     }
 
@@ -107,20 +73,13 @@ impl CipherMethod {
             skey.set_len(key_len);
         }
 
-        #[cfg(feature = "cipher-crypto2")]
-        {
-            HkdfSha1::oneshot(salt, key, b"ss-subkey", &mut skey);
-        }
+        hkdf::Salt::new(hkdf::HKDF_SHA1_FOR_LEGACY_USE_ONLY, salt)
+            .extract(key)
+            .expand(&[b"ss-subkey"], &AES_256_GCM)
+            .unwrap()
+            .fill(&mut skey)
+            .unwrap();
 
-        #[cfg(feature = "cipher-ring")]
-        {
-            hkdf::Salt::new(hkdf::HKDF_SHA1_FOR_LEGACY_USE_ONLY, salt)
-                .extract(key)
-                .expand(&[b"ss-subkey"], &AES_256_GCM)
-                .unwrap()
-                .fill(&mut skey)
-                .unwrap()
-        }
         skey.freeze()
     }
 
