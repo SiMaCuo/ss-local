@@ -45,7 +45,7 @@ where
             reader: BufReader::new(r),
             read_step: ReadingStep::Length,
             cipher: new_aead_decryptor(method, &key_derive_from_pass, &salt),
-            dec: Box::from([0u8; SS_TCP_CHUNK_LEN]),
+            dec: Box::from(vec![0u8; SS_TCP_CHUNK_LEN]),
             len: Box::from(vec![0u8; 2+tag_len]),
             pos: 0,
             cap: 0,
@@ -209,6 +209,7 @@ where
 {
     writer: W,
     cipher: BoxAeadEncryptor,
+    enc_data: Box<[u8]>,
     remaining: BytesMut,
     pos: usize,
     payload_len: usize,
@@ -226,6 +227,7 @@ where
         AeadEncryptorWriter {
             writer: w,
             cipher: new_aead_encryptor(method, &key_derive_from_pass, &salt),
+            enc_data: Box::from(vec![0u8; SS_TCP_CHUNK_LEN]),
             remaining: BytesMut::new(),
             pos: 0,
             payload_len,
@@ -240,20 +242,19 @@ where
             return Ready(Ok(0));
         }
 
-        let mut enc_data = [0u8; SS_TCP_CHUNK_LEN];
         let enc_length_end = 2 + self.tag_len;
-        BigEndian::write_u16(&mut enc_data[..2], buf.len() as u16);
-        let _ = self.cipher.encrypt(&mut enc_data[..enc_length_end]);
+        BigEndian::write_u16(&mut self.enc_data[..2], buf.len() as u16);
+        let _ = self.cipher.encrypt(&mut self.enc_data[..enc_length_end]);
 
         let enc_cap = enc_length_end + buf.len() + self.tag_len;
-        enc_data[enc_length_end..enc_length_end + buf.len()].copy_from_slice(buf);
-        let _ = self.cipher.encrypt(&mut enc_data[enc_length_end..enc_cap]);
-        let n = ready!(Pin::new(&mut self.writer).poll_write(cx, &enc_data[..enc_cap]))?;
+        self.enc_data[enc_length_end..enc_length_end + buf.len()].copy_from_slice(buf);
+        let _ = self.cipher.encrypt(&mut self.enc_data[enc_length_end..enc_cap]);
+        let n = ready!(Pin::new(&mut self.writer).poll_write(cx, &self.enc_data[..enc_cap]))?;
         if n == 0 {
             return Ready(Err(ErrorKind::WriteZero.into()));
         }
         if n != enc_cap {
-            self.remaining.extend_from_slice(&enc_data[n..enc_cap]);
+            self.remaining.extend_from_slice(&self.enc_data[n..enc_cap]);
         }
         self.amt += enc_cap;
 
