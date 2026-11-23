@@ -356,7 +356,7 @@ impl ReadAddress {
                     stream.get_u8(),
                     stream.get_u8(),
                 ));
-                let port = stream.get_u16_be();
+                let port = stream.get_u16();
 
                 Address::SocketAddr(net::SocketAddr::new(addr_v4, port))
             }
@@ -365,16 +365,16 @@ impl ReadAddress {
                 debug_assert_eq!(buf.len(), 1 + 16 + 2);
 
                 let addr_v6 = IpAddr::V6(Ipv6Addr::new(
-                    stream.get_u16_be(),
-                    stream.get_u16_be(),
-                    stream.get_u16_be(),
-                    stream.get_u16_be(),
-                    stream.get_u16_be(),
-                    stream.get_u16_be(),
-                    stream.get_u16_be(),
-                    stream.get_u16_be(),
+                    stream.get_u16(),
+                    stream.get_u16(),
+                    stream.get_u16(),
+                    stream.get_u16(),
+                    stream.get_u16(),
+                    stream.get_u16(),
+                    stream.get_u16(),
+                    stream.get_u16(),
                 ));
-                let port = stream.get_u16_be();
+                let port = stream.get_u16();
 
                 Address::SocketAddr(net::SocketAddr::new(addr_v6, port))
             }
@@ -385,7 +385,7 @@ impl ReadAddress {
 
                 let dmname = String::from_utf8_lossy(&buf[2..2 + dmlen]).into();
                 stream.set_position((2 + dmlen) as u64);
-                let port = stream.get_u16_be();
+                let port = stream.get_u16();
                 Address::DomainName(dmname, port)
             }
         };

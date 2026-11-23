@@ -121,7 +121,7 @@ async fn exchange_salt(remote_stream: &mut TcpStream, m: CipherMethod) -> io::Re
         match remote_stream.read(&mut buf[..]).await {
             Ok(n) => {
                 if n == m.salt_len() {
-                    Bytes::from(&buf[0..n])
+                    Bytes::copy_from_slice(&buf[0..n])
                 } else {
                     debug!("recv remote salt error, need {} bytes, but {} bytes", m.salt_len(), n);
 

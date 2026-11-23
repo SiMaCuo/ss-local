@@ -1,7 +1,7 @@
 use super::{buf::BufReader, SS_TCP_CHUNK_LEN};
 use crate::crypto::{cipher::CipherMethod, new_aead_decryptor, new_aead_encryptor, BoxAeadDecryptor, BoxAeadEncryptor};
 use byteorder::{BigEndian, ByteOrder};
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 use core::task::{
     Context,
     Poll::{self, *},
@@ -173,7 +173,7 @@ where
         debug_assert!(buf.len() > 0);
         let this = &mut *self;
         if this.cap - this.pos > 0 {
-            let len = min(this.cap - this.pos, buf.len());
+            let len = (this.cap - this.pos).min(buf.len());
             buf[..len].copy_from_slice(&this.dec[this.pos..this.pos + len]);
             this.pos += len;
 

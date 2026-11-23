@@ -6,7 +6,7 @@ use smol::{
     io::{AsyncRead, Error},
     ready,
 };
-use std::{cmp, pin::Pin, ptr};
+use std::{cmp, pin::Pin};
 
 pub const DEFAULT_BUF_SIZE: usize = 4 * 1024;
 
@@ -54,8 +54,8 @@ impl<R: AsyncRead + Unpin> BufReader<R> {
             } else if expect_len > self.cap - self.pos {
                 self.buf.copy_within(self.pos..self.cap, 0);
                 
-                self.pos = 0;
                 self.cap = self.cap - self.pos;
+                self.pos = 0;
 
                 let read_len = ready!(Pin::new(&mut self.inner).poll_read(cx, &mut self.buf[self.cap..]))?;
                 self.eof = read_len == 0;

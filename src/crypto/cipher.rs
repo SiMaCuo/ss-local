@@ -8,7 +8,7 @@ use cipher::{
     hkdf,
 };
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 use rand::{self, RngCore};
 use std::{
     io::{Error, ErrorKind},
