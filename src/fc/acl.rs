@@ -4,7 +4,7 @@ use ipnet::IpNet;
 use log::info;
 use parking_lot::RwLock;
 use pcre2::bytes::Regex;
-use rand::{rngs::SmallRng, FromEntropy, Rng};
+use rand::{FromEntropy, Rng, rngs::SmallRng};
 use std::{
     fs::File,
     io::{self, BufRead, BufReader},

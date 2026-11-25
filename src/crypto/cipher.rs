@@ -41,9 +41,7 @@ impl CipherMethod {
 
     pub fn nonce(&self) -> BytesMut {
         match self {
-            CipherMethod::Aes256Gcm | CipherMethod::Chacha20IetfPoly1305 => {
-                BytesMut::zeroed(aead::NONCE_LEN)
-            }
+            CipherMethod::Aes256Gcm | CipherMethod::Chacha20IetfPoly1305 => BytesMut::zeroed(aead::NONCE_LEN),
         }
     }
 

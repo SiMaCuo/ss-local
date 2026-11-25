@@ -1,7 +1,7 @@
 use bytes::Buf;
 use smol::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{self, TcpStream, IpAddr, Ipv4Addr, Ipv6Addr},
+    net::{self, IpAddr, Ipv4Addr, Ipv6Addr, TcpStream},
 };
 use std::{
     fmt::{self, Debug, Formatter},
@@ -99,7 +99,7 @@ impl Socks5HandShake {
     {
         let mut leaky = [0u8; 16];
         let mut resp = HandShakeResponse::new(s5code::SOCKS5_METHOD_NO_ACCEPT);
-        let err = match r.read(&mut leaky[..]).await  {
+        let err = match r.read(&mut leaky[..]).await {
             Ok(read_len) => {
                 if read_len < 2 {
                     return Some(Error::new(

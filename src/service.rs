@@ -3,7 +3,7 @@ use super::{
     tcprelay::{
         copy_into::copy_into,
         crypto_io::{AeadDecryptedReader, AeadEncryptorWriter},
-        socks5::{self, s5code, Address, Reply, SOCKS5_VERSION},
+        socks5::{self, Address, Reply, SOCKS5_VERSION, s5code},
     },
 };
 use crate::crypto::cipher::CipherMethod;
@@ -13,7 +13,7 @@ use bytes::Bytes;
 use futures::select;
 use log::{debug, info};
 use smol::{
-    io::{split, AsyncWriteExt, ReadHalf, WriteHalf},
+    io::{AsyncWriteExt, ReadHalf, WriteHalf, split},
     net::{SocketAddr, TcpListener, TcpStream},
     prelude::*,
 };
@@ -21,7 +21,7 @@ use std::{
     io,
     marker::Unpin,
     path::{Path, PathBuf},
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{Arc, atomic::AtomicUsize},
 };
 
 #[cfg(target_os = "windows")]

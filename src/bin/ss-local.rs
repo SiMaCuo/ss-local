@@ -1,9 +1,9 @@
 #![windows_subsystem = "windows"]
 use clap::{App, Arg};
-use smol::block_on;
 use log::info;
 use log4rs;
 use shadowsocks::service;
+use smol::block_on;
 use std::path::{Path, PathBuf};
 
 fn main() {
@@ -69,11 +69,9 @@ fn main() {
             err
         })
         .and_then(|mut srv| {
-            block_on(
-                async {
-                    srv.serve().await;
-                },
-            );
+            block_on(async {
+                srv.serve().await;
+            });
 
             Ok(())
         });

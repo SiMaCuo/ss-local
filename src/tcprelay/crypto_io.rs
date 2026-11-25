@@ -1,12 +1,12 @@
-use super::{buf::BufReader, SS_TCP_CHUNK_LEN};
-use crate::crypto::{cipher::CipherMethod, new_aead_decryptor, new_aead_encryptor, BoxAeadDecryptor, BoxAeadEncryptor};
+use super::{SS_TCP_CHUNK_LEN, buf::BufReader};
+use crate::crypto::{BoxAeadDecryptor, BoxAeadEncryptor, cipher::CipherMethod, new_aead_decryptor, new_aead_encryptor};
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{Bytes, BytesMut};
 use core::task::{
     Context,
     Poll::{self, *},
 };
-use smol::{io, prelude::*, ready};
+use smol::{fs::copy, io, prelude::*, ready};
 use std::{io::ErrorKind, pin::Pin};
 
 // +--------------+---------------+--------------+------------+
@@ -46,7 +46,7 @@ where
             read_step: ReadingStep::Length,
             cipher: new_aead_decryptor(method, &key_derive_from_pass, &salt),
             dec: Box::from(vec![0u8; SS_TCP_CHUNK_LEN]),
-            len: Box::from(vec![0u8; 2+tag_len]),
+            len: Box::from(vec![0u8; 2 + tag_len]),
             pos: 0,
             cap: 0,
             amt: 0,
@@ -113,63 +113,149 @@ where
         }
     }
 
-    fn decrypt_data(&mut self, cx: &mut Context, buf: &mut [u8]) -> (Poll<Result<usize, io::Error>>, usize) {
-        let (mut copy_len, cap) = (0usize, buf.len());
-        while copy_len < cap {
+    fn decrypt_data(&mut self, cx: &mut Context, out: &mut [u8]) -> (Poll<Result<usize>>, usize) {
+        let (mut copy_len, bufcap) = (0usize, out.len());
+        let mut fillbuf_pending = false;
+        while copy_len < bufcap {
             match self.read_step {
-                ReadingStep::Length => match self.read_length(cx) {
-                    Ready(Ok(data_len)) => {
-                        log::debug!("  decrypt data length {}", data_len);
-                        if data_len == 0 {
-                            return (Ready(Ok(0)), copy_len);
+                ReadingStep::Length => {
+                    let expect_len = 2 + self.tag_len;
+                    if expect_len > self.reader.len() && !fillbuf_pending {
+                        match self.reader.poll_fill_buf(cx) {
+                            Ready(Ok(n)) => {
+                                if n == 0 {
+                                    return (Ready(Ok(0)), copy_len);
+                                }
+                            }
+                            Ready(e) => {
+                                return (Ready(e), copy_len);
+                            }
+                            Pending => {
+                                fillbuf_pending = true;
+                            }
                         }
+                    }
 
+                    if expect_len <= self.reader.len() {
+                        let ciphertext = self.reader.buffer();
+                        self.len[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
+                        let _ = self.cipher.decrypt(&mut self.len[..expect_len]);
+                        self.reader.consume(expect_len);
+
+                        let data_len = BigEndian::read_u16(&self.len[..2]) as usize;
                         self.read_step = ReadingStep::Data(data_len);
-                    }
-
-                    Ready(Err(e)) => {
-                        log::debug!(" decrypt data lenth ({:?}, {})", e, copy_len);
-                        return (Ready(Err(e)), copy_len);
-                    }
-
-                    Pending => {
-                        log::debug!(" decrypt data len (Pending, {})", copy_len);
+                    } else {
+                        debug_assert!(fillbuf_pending);
                         return (Pending, copy_len);
                     }
-                },
+                }
 
-                ReadingStep::Data(data_len) => match self.read_data(cx, data_len, &mut buf[copy_len..]) {
-                    Ready(Ok(n)) => {
-                        if n == 0 {
-                            return (Ready(Ok(0)), copy_len);
+                ReadingStep::Data(data_len) => {
+                    if data_len > out.len() - copy_len {
+                        if fillbuf_pending {
+                            return (Pending, copy_len);
+                        } else {
+                            return (Ready(Ok(copy_len)), copy_len);
                         }
-                        log::debug!("  decrypt payload {} bytes", n);
-                        copy_len += n;
-                        self.read_step = ReadingStep::Length;
                     }
 
-                    Ready(Err(e)) => {
-                        log::debug!(" decrypt payload ({:?}, {})", e, copy_len);
-                        return (Ready(Err(e)), copy_len);
+                    let expect_len = data_len + self.tag_len;
+                    if expect_len > self.reader.len() {
+                        if !fillbuf_pending {
+                            match self.reader.poll_fill_buf(cx) {
+                                Ready(Ok(n)) => {
+                                    if n == 0 {
+                                        // is returning `UnexpectedEof` mandatory when 
+                                        // hitting EOF mid-way through reading the frame body?
+                                        return (Ready(Ok(0)), copy_len);
+                                    }
+                                }
+                                Ready(e) => {
+                                    return (Ready(e), copy_len);
+                                }
+                                Pending => {
+                                    fillbuf_pending = true;
+                                }
+                            }
+                        } else {
+                            return (Pending, copy_len);
+                        }
                     }
 
-                    Pending => {
-                        log::debug!(" decrypt payload (Pending, {})", copy_len);
+                    if expect_len > self.reader.len() {
+                        debug_assert!(fillbuf_pending);
                         return (Pending, copy_len);
                     }
-                },
+
+                    let mut ciphertext = self.reader.buffer();
+                    let _ = self.cipher.decrypt(&mut ciphertext[..expect_len]);
+                    out[copy_len..copy_len + data_len].copy_from_slice(&ciphertext[..data_len]);
+                    copy_len += data_len;
+                    self.read_step = ReadingStep::Length;
+                    self.reader.consume(expect_len);
+                }
             }
         }
 
-        return (Ready(Ok(copy_len)), copy_len);
+        (Ready(Ok(copy_len)), copy_len)
     }
+    // fn decrypt_data(&mut self, cx: &mut Context, buf: &mut [u8]) -> (Poll<Result<usize, io::Error>>, usize) {
+    //     let (mut copy_len, cap) = (0usize, buf.len());
+    //     while copy_len < cap {
+    //         match self.read_step {
+    //             ReadingStep::Length => match self.read_length(cx) {
+    //                 Ready(Ok(data_len)) => {
+    //                     log::debug!("  decrypt data length {}", data_len);
+    //                     if data_len == 0 {
+    //                         return (Ready(Ok(0)), copy_len);
+    //                     }
+
+    //                     self.read_step = ReadingStep::Data(data_len);
+    //                 }
+
+    //                 Ready(Err(e)) => {
+    //                     log::debug!(" decrypt data lenth ({:?}, {})", e, copy_len);
+    //                     return (Ready(Err(e)), copy_len);
+    //                 }
+
+    //                 Pending => {
+    //                     log::debug!(" decrypt data len (Pending, {})", copy_len);
+    //                     return (Pending, copy_len);
+    //                 }
+    //             },
+
+    //             ReadingStep::Data(data_len) => match self.read_data(cx, data_len, &mut buf[copy_len..]) {
+    //                 Ready(Ok(n)) => {
+    //                     if n == 0 {
+    //                         return (Ready(Ok(0)), copy_len);
+    //                     }
+    //                     log::debug!("  decrypt payload {} bytes", n);
+    //                     copy_len += n;
+    //                     self.read_step = ReadingStep::Length;
+    //                 }
+
+    //                 Ready(Err(e)) => {
+    //                     log::debug!(" decrypt payload ({:?}, {})", e, copy_len);
+    //                     return (Ready(Err(e)), copy_len);
+    //                 }
+
+    //                 Pending => {
+    //                     log::debug!(" decrypt payload (Pending, {})", copy_len);
+    //                     return (Pending, copy_len);
+    //                 }
+    //             },
+    //         }
+    //     }
+
+    //     return (Ready(Ok(copy_len)), copy_len);
+    // }
 }
 
 impl<R> AsyncRead for AeadDecryptedReader<R>
 where
     R: AsyncRead + Unpin,
 {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context, buf: &mut [u8]) -> Poll<Result<usize, io::Error>> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context, buf: &mut [u8]) -> Poll<Result<usize>> {
         debug_assert!(buf.len() > 0);
         let this = &mut *self;
         if this.cap - this.pos > 0 {
