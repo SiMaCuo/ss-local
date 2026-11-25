@@ -40,11 +40,11 @@ cipher-aws-lc = ["aws-lc-rs"]
 cipher-ring = ["ring"]
 
 [profile.release]
-debug = false
-debug-assertions = false
-overflow-checks = false
-lto = "fat"
+debug = true
+#debug-assertions = false
+#overflow-checks = false
+#lto = "fat"
 incremental = false
 codegen-units = 1
-strip = "symbols"
+#strip = "symbols"
 panic = "abort"

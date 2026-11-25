@@ -7,6 +7,7 @@ use smol::{
     ready,
 };
 use std::pin::Pin;
+use super::KB;
 
 pub const DEFAULT_BUF_SIZE: usize = 64 * KB;
 
@@ -38,11 +39,12 @@ impl<R: AsyncRead + Unpin> BufReader<R> {
         self.inner
     }
 
+    #[allow(dead_code)]
     pub fn is_eof(&self) -> bool {
         self.eof
     }
 
-    pub fn poll_fill_buf(&mut self, cx: &mut Context) -> Poll<Result<usize>> {
+    pub fn poll_fill_buf(&mut self, cx: &mut Context) -> Poll<Result<usize, Error>> {
         let mut total_read = 0usize;
         if !self.eof {
             if self.pos >= self.end {
@@ -87,6 +89,7 @@ impl<R: AsyncRead + Unpin> BufReader<R> {
         Ready(Ok(total_read))
     }
 
+    #[allow(dead_code)] 
     pub fn fill_buf(&mut self, cx: &mut Context, expect_len: usize) -> Poll<Result<&[u8], Error>> {
         debug_assert!(expect_len <= self.buf.len());
 
@@ -111,7 +114,7 @@ impl<R: AsyncRead + Unpin> BufReader<R> {
         Ready(Ok(&self.buf[self.pos..self.end]))
     }
 
-    pub fn buffer(&self) -> &mut [u8] {
+    pub fn buffer(&mut self) -> &mut [u8] {
         &mut self.buf[self.pos..self.end]
     }
 

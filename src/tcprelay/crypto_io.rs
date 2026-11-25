@@ -6,8 +6,8 @@ use core::task::{
     Context,
     Poll::{self, *},
 };
-use smol::{fs::copy, io, prelude::*, ready};
-use std::{io::ErrorKind, pin::Pin};
+use smol::{io, prelude::*, ready};
+use std::{io::{ErrorKind, Error}, pin::Pin};
 
 // +--------------+---------------+--------------+------------+
 // |  *DataLen*   |  DataLen_TAG  |    *Data*    |  Data_TAG  |
@@ -30,6 +30,7 @@ where
     len: Box<[u8]>,
     pos: usize,
     cap: usize,
+    #[allow(dead_code)]
     amt: usize,
     tag_len: usize,
     poll: Option<Poll<Result<usize, io::Error>>>,
@@ -55,6 +56,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     fn read_length(&mut self, cx: &mut Context) -> Poll<Result<usize, io::Error>> {
         let expect_len = 2 + self.tag_len;
         loop {
@@ -74,6 +76,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     fn read_data(&mut self, cx: &mut Context, data_len: usize, out: &mut [u8]) -> Poll<Result<usize, io::Error>> {
         let expect_len = data_len + self.tag_len;
         debug_assert!(expect_len <= SS_TCP_CHUNK_LEN);
@@ -113,7 +116,7 @@ where
         }
     }
 
-    fn decrypt_data(&mut self, cx: &mut Context, out: &mut [u8]) -> (Poll<Result<usize>>, usize) {
+    fn decrypt_data(&mut self, cx: &mut Context, out: &mut [u8]) -> (Poll<Result<usize, Error>>, usize) {
         let (mut copy_len, bufcap) = (0usize, out.len());
         let mut fillbuf_pending = false;
         while copy_len < bufcap {
@@ -187,7 +190,7 @@ where
                         return (Pending, copy_len);
                     }
 
-                    let mut ciphertext = self.reader.buffer();
+                    let ciphertext = self.reader.buffer();
                     let _ = self.cipher.decrypt(&mut ciphertext[..expect_len]);
                     out[copy_len..copy_len + data_len].copy_from_slice(&ciphertext[..data_len]);
                     copy_len += data_len;
@@ -255,7 +258,7 @@ impl<R> AsyncRead for AeadDecryptedReader<R>
 where
     R: AsyncRead + Unpin,
 {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context, buf: &mut [u8]) -> Poll<Result<usize>> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
         debug_assert!(buf.len() > 0);
         let this = &mut *self;
         if this.cap - this.pos > 0 {
