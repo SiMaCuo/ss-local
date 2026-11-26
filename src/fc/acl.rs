@@ -66,9 +66,9 @@ impl BypassHost {
     }
 
     pub fn add_rule(&mut self, host: &str) {
-        let bh = Bytes::from(host);
+        let bh = Bytes::copy_from_slice(host.as_bytes());
         if self.v.len() < self.cap {
-            let bv = bh.slice_from(0);
+            let bv = bh.slice(0..);
             self.h.insert(bh);
             self.v.push(bv);
         } else {

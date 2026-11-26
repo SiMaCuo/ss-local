@@ -1,14 +1,13 @@
 use bytes::Buf;
-use smol::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{self, IpAddr, Ipv4Addr, Ipv6Addr, TcpStream},
-};
 use std::{
     fmt::{self, Debug, Formatter},
-    io::{self, Cursor, Error, ErrorKind},
-    net::ToSocketAddrs,
+    io::{Cursor, Error, ErrorKind, Result},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
 };
-
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
 pub const SOCKS5_VERSION: u8 = 5;
 
 #[cfg_attr(rustfmt, rustfmt_skip)]
@@ -81,7 +80,7 @@ impl HandShakeResponse {
         self.msg[1] = code;
     }
 
-    async fn write_to<'a, W>(&'a self, w: &'a mut W) -> io::Result<()>
+    async fn write_to<'a, W>(&'a self, w: &'a mut W) -> Result<()>
     where
         W: AsyncWriteExt + Unpin,
     {
@@ -248,13 +247,13 @@ impl Reply {
 
 #[derive(Clone)]
 pub enum Address {
-    SocketAddr(net::SocketAddr),
+    SocketAddr(SocketAddr),
     DomainName(String, u16),
 }
 
 impl Address {
     #[allow(dead_code)]
-    pub async fn connect<'a, W>(&'a self, w: &'a mut W) -> io::Result<TcpStream>
+    pub async fn connect<'a, W>(&'a self, w: &'a mut W) -> Result<TcpStream>
     where
         W: AsyncWriteExt + Unpin,
     {
@@ -288,7 +287,7 @@ impl Address {
             Address::SocketAddr(addr) => TcpStream::connect(*addr).await,
 
             Address::DomainName(dmname, port) => {
-                let mut v: Vec<net::SocketAddr> = Vec::new();
+                let mut v: Vec<SocketAddr> = Vec::new();
                 if let Ok(addrs) = format!("{}:{}", dmname, port).to_socket_addrs() {
                     v = addrs.collect();
                 }
@@ -343,7 +342,7 @@ impl Debug for Address {
 pub struct ReadAddress;
 
 impl ReadAddress {
-    pub fn read_from(buf: &[u8]) -> io::Result<Address> {
+    pub fn read_from(buf: &[u8]) -> Result<Address> {
         let mut stream = Cursor::new(buf);
         let atyp = AddrType::from_u8(stream.get_u8());
         let address = match atyp {
@@ -358,7 +357,7 @@ impl ReadAddress {
                 ));
                 let port = stream.get_u16();
 
-                Address::SocketAddr(net::SocketAddr::new(addr_v4, port))
+                Address::SocketAddr(SocketAddr::new(addr_v4, port))
             }
 
             AddrType::V6 => {
@@ -376,7 +375,7 @@ impl ReadAddress {
                 ));
                 let port = stream.get_u16();
 
-                Address::SocketAddr(net::SocketAddr::new(addr_v6, port))
+                Address::SocketAddr(SocketAddr::new(addr_v6, port))
             }
             AddrType::Domain => {
                 debug_assert!(buf.len() > 2);
@@ -397,7 +396,7 @@ impl ReadAddress {
 pub struct TcpConnect;
 
 impl TcpConnect {
-    pub async fn deal_with<'a, R, W>(r: &'a mut R, w: &'a mut W, leaky: &'a mut [u8]) -> io::Result<usize>
+    pub async fn deal_with<'a, R, W>(r: &'a mut R, w: &'a mut W, leaky: &'a mut [u8]) -> Result<usize>
     where
         R: AsyncReadExt + Unpin,
         W: AsyncWriteExt + Unpin,

@@ -3,8 +3,8 @@ use clap::{App, Arg};
 use log::info;
 use log4rs;
 use shadowsocks::service;
-use smol::block_on;
 use std::path::{Path, PathBuf};
+use tokio;
 
 fn main() {
     let matches = App::new("ss-local")
@@ -69,7 +69,13 @@ fn main() {
             err
         })
         .and_then(|mut srv| {
-            block_on(async {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("tokio-worker")
+                .build()
+                .expect("failed to build tokio runtime");
+
+            rt.block_on(async {
                 srv.serve().await;
             });
 

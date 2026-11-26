@@ -6,8 +6,10 @@ use core::task::{
     Context,
     Poll::{self, *},
 };
-use smol::{io, prelude::*, ready};
-use std::{io::{ErrorKind, Error}, pin::Pin};
+use std::{
+    io::{Error, ErrorKind}, pin::Pin, task::ready,
+};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 // +--------------+---------------+--------------+------------+
 // |  *DataLen*   |  DataLen_TAG  |    *Data*    |  Data_TAG  |
@@ -33,7 +35,6 @@ where
     #[allow(dead_code)]
     amt: usize,
     tag_len: usize,
-    poll: Option<Poll<Result<usize, io::Error>>>,
 }
 
 impl<R> AeadDecryptedReader<R>
@@ -52,72 +53,71 @@ where
             cap: 0,
             amt: 0,
             tag_len,
-            poll: None,
         }
     }
 
-    #[allow(dead_code)]
-    fn read_length(&mut self, cx: &mut Context) -> Poll<Result<usize, io::Error>> {
-        let expect_len = 2 + self.tag_len;
-        loop {
-            let ciphertext = ready!(self.reader.fill_buf(cx, expect_len))?;
-            if ciphertext.len() >= expect_len {
-                self.len[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
-                let _ = self.cipher.decrypt(&mut self.len[..expect_len]);
-                self.reader.consume(expect_len);
-                self.amt += expect_len;
+    // #[allow(dead_code)]
+    // fn read_length(&mut self, cx: &mut Context) -> Poll<Result<usize, Error>> {
+    //     let expect_len = 2 + self.tag_len;
+    //     loop {
+    //         let ciphertext = ready!(self.reader.fill_buf(cx, expect_len))?;
+    //         if ciphertext.len() >= expect_len {
+    //             self.len[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
+    //             let _ = self.cipher.decrypt(&mut self.len[..expect_len]);
+    //             self.reader.consume(expect_len);
+    //             self.amt += expect_len;
 
-                return Ready(Ok(BigEndian::read_u16(&self.len[..2]) as usize));
-            }
+    //             return Ready(Ok(BigEndian::read_u16(&self.len[..2]) as usize));
+    //         }
 
-            if self.reader.is_eof() {
-                return Ready(Err(ErrorKind::UnexpectedEof.into()));
-            }
-        }
-    }
+    //         if self.reader.is_eof() {
+    //             return Ready(Err(ErrorKind::UnexpectedEof.into()));
+    //         }
+    //     }
+    // }
 
-    #[allow(dead_code)]
-    fn read_data(&mut self, cx: &mut Context, data_len: usize, out: &mut [u8]) -> Poll<Result<usize, io::Error>> {
-        let expect_len = data_len + self.tag_len;
-        debug_assert!(expect_len <= SS_TCP_CHUNK_LEN);
+    // #[allow(dead_code)]
+    // fn read_data(&mut self, cx: &mut Context, data_len: usize, out: &mut [u8]) -> Poll<Result<usize, Error>> {
+    //     let expect_len = data_len + self.tag_len;
+    //     debug_assert!(expect_len <= SS_TCP_CHUNK_LEN);
 
-        loop {
-            let ciphertext = ready!(self.reader.fill_buf(cx, expect_len))?;
-            if ciphertext.len() >= expect_len {
-                let out_len = out.len();
-                let rlt = if out_len >= expect_len {
-                    out[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
-                    let _ = self.cipher.decrypt(&mut out[..expect_len]);
+    //     loop {
+    //         let ciphertext = ready!(self.reader.fill_buf(cx, expect_len))?;
+    //         if ciphertext.len() >= expect_len {
+    //             let out_len = out.len();
+    //             let rlt = if out_len >= expect_len {
+    //                 out[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
+    //                 let _ = self.cipher.decrypt(&mut out[..expect_len]);
 
-                    Ok(data_len)
-                } else {
-                    self.dec[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
-                    let _ = self.cipher.decrypt(&mut self.dec[..expect_len]);
-                    if out_len >= data_len {
-                        out[..data_len].copy_from_slice(&self.dec[..data_len]);
-                        Ok(data_len)
-                    } else {
-                        out[..].copy_from_slice(&self.dec[..out_len]);
-                        self.cap = data_len;
-                        self.pos = out_len;
-                        Ok(out_len)
-                    }
-                };
+    //                 Ok(data_len)
+    //             } else {
+    //                 self.dec[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
+    //                 let _ = self.cipher.decrypt(&mut self.dec[..expect_len]);
+    //                 if out_len >= data_len {
+    //                     out[..data_len].copy_from_slice(&self.dec[..data_len]);
+    //                     Ok(data_len)
+    //                 } else {
+    //                     out[..].copy_from_slice(&self.dec[..out_len]);
+    //                     self.cap = data_len;
+    //                     self.pos = out_len;
+    //                     Ok(out_len)
+    //                 }
+    //             };
 
-                self.reader.consume(expect_len);
-                self.amt += expect_len;
+    //             self.reader.consume(expect_len);
+    //             self.amt += expect_len;
 
-                return Ready(rlt);
-            }
+    //             return Ready(rlt);
+    //         }
 
-            if self.reader.is_eof() {
-                return Ready(Err(ErrorKind::UnexpectedEof.into()));
-            }
-        }
-    }
+    //         if self.reader.is_eof() {
+    //             return Ready(Err(ErrorKind::UnexpectedEof.into()));
+    //         }
+    //     }
+    // }
 
-    fn decrypt_data(&mut self, cx: &mut Context, out: &mut [u8]) -> (Poll<Result<usize, Error>>, usize) {
-        let (mut copy_len, bufcap) = (0usize, out.len());
+    fn decrypt_data(&mut self, cx: &mut Context, out: &mut ReadBuf) -> (Poll<Result<usize, Error>>, usize) {
+        let (mut copy_len, bufcap) = (0usize, out.remaining());
         let mut fillbuf_pending = false;
         while copy_len < bufcap {
             match self.read_step {
@@ -154,7 +154,7 @@ where
                 }
 
                 ReadingStep::Data(data_len) => {
-                    if data_len > out.len() - copy_len {
+                    if data_len > out.remaining() - copy_len {
                         if fillbuf_pending {
                             return (Pending, copy_len);
                         } else {
@@ -168,7 +168,7 @@ where
                             match self.reader.poll_fill_buf(cx) {
                                 Ready(Ok(n)) => {
                                     if n == 0 {
-                                        // is returning `UnexpectedEof` mandatory when 
+                                        // is returning `UnexpectedEof` mandatory when
                                         // hitting EOF mid-way through reading the frame body?
                                         return (Ready(Ok(0)), copy_len);
                                     }
@@ -192,17 +192,17 @@ where
 
                     let ciphertext = self.reader.buffer();
                     let _ = self.cipher.decrypt(&mut ciphertext[..expect_len]);
-                    out[copy_len..copy_len + data_len].copy_from_slice(&ciphertext[..data_len]);
+                    out.put_slice(&ciphertext[..data_len]);
                     copy_len += data_len;
-                    self.read_step = ReadingStep::Length;
                     self.reader.consume(expect_len);
+                    self.read_step = ReadingStep::Length;
                 }
             }
         }
 
         (Ready(Ok(copy_len)), copy_len)
     }
-    // fn decrypt_data(&mut self, cx: &mut Context, buf: &mut [u8]) -> (Poll<Result<usize, io::Error>>, usize) {
+    // fn decrypt_data(&mut self, cx: &mut Context, buf: &mut [u8]) -> (Poll<Result<usize, Error>>, usize) {
     //     let (mut copy_len, cap) = (0usize, buf.len());
     //     while copy_len < cap {
     //         match self.read_step {
@@ -258,12 +258,12 @@ impl<R> AsyncRead for AeadDecryptedReader<R>
 where
     R: AsyncRead + Unpin,
 {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context, buf: &mut [u8]) -> Poll<Result<usize, Error>> {
-        debug_assert!(buf.len() > 0);
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context, buf: &mut ReadBuf) -> Poll<Result<(), Error>> {
+        debug_assert!(buf.remaining() > 0);
         let this = &mut *self;
         if this.cap - this.pos > 0 {
-            let len = (this.cap - this.pos).min(buf.len());
-            buf[..len].copy_from_slice(&this.dec[this.pos..this.pos + len]);
+            let len = (this.cap - this.pos).min(buf.remaining());
+            buf.put_slice(&this.dec[this.pos..this.pos + len]);
             this.pos += len;
 
             if this.pos >= this.cap {
@@ -271,24 +271,22 @@ where
                 this.cap = 0;
             }
 
-            log::debug!("  still has data");
-            return Ready(Ok(len));
-        }
-
-        if let Some(poll) = this.poll.take() {
-            return poll;
+            debug_assert!(buf.remaining() > 0);
         }
 
         let (poll, copy_len) = this.decrypt_data(cx, buf);
-        if copy_len == 0 {
-            return poll;
+        match ready!(poll) {
+            Ok(0) => {
+                return Ready(Err(ErrorKind::UnexpectedEof.into()));
+            }
+            Err(e) => {
+                return Ready(Err(e));
+            }
+            Ok(_) => {
+                debug_assert!(copy_len > 0);
+                return Ready(Ok(()));
+            }
         }
-
-        if let Pending = poll {
-            this.poll = Some(Pending);
-        }
-
-        Ready(Ok(copy_len))
     }
 }
 
@@ -325,7 +323,7 @@ where
         }
     }
 
-    fn write_payload(&mut self, cx: &mut Context, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
+    fn write_payload(&mut self, cx: &mut Context, buf: &[u8]) -> Poll<Result<usize, Error>> {
         debug_assert!(buf.len() <= self.payload_len);
         if self.remaining.len() > 0 {
             return Ready(Ok(0));
@@ -350,7 +348,7 @@ where
         Ready(Ok(buf.len()))
     }
 
-    fn write(&mut self, cx: &mut Context, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
+    fn write(&mut self, cx: &mut Context, buf: &[u8]) -> Poll<Result<usize, Error>> {
         let mut total_write = 0usize;
         for i in 0..(buf.len() / self.payload_len) + 1 {
             let boundary = (i + 1) * self.payload_len;
@@ -372,7 +370,7 @@ impl<W> AsyncWrite for AeadEncryptorWriter<W>
 where
     W: AsyncWrite + Unpin,
 {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context, buf: &[u8]) -> Poll<Result<usize, Error>> {
         let this = &mut *self;
         let remain_len = this.remaining.len();
         while this.pos < remain_len {
@@ -385,11 +383,11 @@ where
         this.write(cx, buf)
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
         Pin::new(&mut self.get_mut().writer).poll_flush(cx)
     }
 
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
-        Pin::new(&mut self.get_mut().writer).poll_close(cx)
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Error>> {
+        Pin::new(&mut self.get_mut().writer).poll_shutdown(cx)
     }
 }

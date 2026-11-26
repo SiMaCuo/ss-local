@@ -10,28 +10,29 @@ use crate::crypto::cipher::CipherMethod;
 #[cfg(target_os = "windows")]
 use crate::fc::acl::AclResult;
 use bytes::Bytes;
-use futures::select;
 use log::{debug, info};
-use smol::{
-    io::{AsyncWriteExt, ReadHalf, WriteHalf, split},
-    net::{SocketAddr, TcpListener, TcpStream},
-    prelude::*,
-};
 use std::{
     io,
     marker::Unpin,
+    net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicUsize},
+    sync::Arc,
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncRead, AsyncWrite, AsyncWriteExt},
+    net::{
+        TcpListener,
+        TcpStream,
+        tcp::{OwnedReadHalf, OwnedWriteHalf},
+    },
 };
 
 #[cfg(target_os = "windows")]
 fn acl_match_address(conf: &SsConfig, address: &socks5::Address) -> AclResult {
     match address {
         Address::SocketAddr(sock_addr) => {
-            if sock_addr.ip().is_loopback()
-                || sock_addr.ip().is_multicast()
-                || sock_addr.ip().is_unspecified()
-                || sock_addr.ip().is_documentation()
+            if sock_addr.ip().is_loopback() || sock_addr.ip().is_multicast() || sock_addr.ip().is_unspecified()
+            // || sock_addr.ip().is_documentation()
             {
                 return AclResult::Reject;
             }
@@ -53,7 +54,7 @@ fn acl_match_address(conf: &SsConfig, address: &socks5::Address) -> AclResult {
             return AclResult::ByPass;
         }
 
-        Address::DomainName(ref domain, _) => return conf.acl_match(&domain),
+        Address::DomainName(domain, _) => return conf.acl_match(&domain),
     }
 }
 
@@ -142,8 +143,8 @@ async fn exchange_salt(remote_stream: &mut TcpStream, m: CipherMethod) -> io::Re
 
 async fn proxy_shadowsock<'a>(
     shared_conf: &'a SsConfig,
-    lr: &'a mut ReadHalf<TcpStream>,
-    lw: &'a mut WriteHalf<TcpStream>,
+    lr: &'a mut OwnedReadHalf,
+    lw: &'a mut OwnedWriteHalf,
     address: &'a Address,
     url: &'a [u8],
 ) {
@@ -164,7 +165,7 @@ async fn proxy_shadowsock<'a>(
         }
     };
 
-    let (rr, rw) = split(remote_stream);
+    let (rr, rw) = remote_stream.into_split();
     let mut enc_writer = AeadEncryptorWriter::new(
         rw,
         shared_conf.method(),
@@ -190,12 +191,12 @@ async fn proxy_shadowsock<'a>(
 }
 
 #[cfg(target_os = "windows")]
-async fn proxy_http<'a>(lr: &'a mut ReadHalf<TcpStream>, lw: &'a mut WriteHalf<TcpStream>, address: &'a Address) {
+async fn proxy_http<'a>(lr: &'a mut OwnedReadHalf, lw: &'a mut OwnedWriteHalf, address: &'a Address) {
     match address.connect(lw).await {
         Ok(remote_stream) => {
             let host_name = format!("{:?}", address);
             let peer_addr = remote_stream.local_addr().unwrap();
-            let (mut rr, mut rw) = split(remote_stream);
+            let (mut rr, mut rw) = remote_stream.into_split();
             proxy_copy(lr, lw, &mut rr, &mut rw, &host_name, &peer_addr).await;
         }
 
@@ -206,8 +207,8 @@ async fn proxy_http<'a>(lr: &'a mut ReadHalf<TcpStream>, lw: &'a mut WriteHalf<T
 }
 
 async fn proxy_copy<'a, R, W>(
-    local_read: &'a mut ReadHalf<TcpStream>,
-    local_write: &'a mut WriteHalf<TcpStream>,
+    local_read: &'a mut OwnedReadHalf,
+    local_write: &'a mut OwnedWriteHalf,
     remote_read: &'a mut R,
     remote_write: &'a mut W,
     host_name: &'a str,
@@ -217,33 +218,24 @@ async fn proxy_copy<'a, R, W>(
     W: AsyncWrite + Unpin,
 {
     debug!("{} <- {}, two-way copying", host_name, peer_addr);
-    let mark = Arc::new(AtomicUsize::new(1));
-    let mut l2r = copy_into(
-        local_read,
-        remote_write,
-        mark.clone(),
-        format!("{} <- {}", host_name, peer_addr),
-    );
-    let mut r2l = copy_into(
-        remote_read,
-        local_write,
-        mark.clone(),
-        format!("{} -> {}", host_name, peer_addr),
-    );
-    loop {
-        select! {
-            _ = l2r => { let _ = l2r.close().await; },
-            _ = r2l => { let _ = r2l.close().await; },
-            complete => {
-                debug!("{} <-> {} total done", host_name, peer_addr);
-                break;
-            },
-        }
+    // let mut l2r = async { copy_into(local_read, remote_write, format!("{} <- {}", host_name, peer_addr)).await };
+
+    // let mut r2l = async { copy_into(remote_read, local_write, format!("{} -> {}", host_name, peer_addr)).await };
+
+    tokio::select! {
+        _ = async {
+            copy_into(local_read, remote_write, format!("{} <- {}", host_name, peer_addr)).await
+        } => {},
+        _ = async {
+            copy_into(remote_read, local_write, format!("{} -> {}", host_name, peer_addr)).await
+        } => {},
     }
+
+    let _ = tokio::join!(remote_write.shutdown(), local_write.shutdown());
 }
 
 async fn run_socks5_connection(shared_conf: Arc<SsConfig>, stream: TcpStream) {
-    let (mut lr, mut lw) = split(stream);
+    let (mut lr, mut lw) = stream.into_split();
     if let Some(e) = socks5::Socks5HandShake::deal_with(&mut lr, &mut lw).await {
         debug!("local socks5 handshake failed {}", e);
 
@@ -297,12 +289,19 @@ impl Service {
     pub async fn serve(&mut self) {
         match TcpListener::bind(self.config.listen_addr()).await {
             Ok(listener) => {
-                let mut incoming = listener.incoming();
                 println!("Listening on: {}", self.config.listen_addr());
                 info!("Listening on: {}", self.config.listen_addr());
-                while let Some(Ok(stream)) = incoming.next().await {
-                    let fut = run_socks5_connection(self.config.clone(), stream);
-                    smol::spawn(fut).detach();
+                loop {
+                    match listener.accept().await {
+                        Ok((stream, _)) => {
+                            let fut = run_socks5_connection(self.config.clone(), stream);
+                            tokio::spawn(fut);
+                        }
+
+                        Err(e) => {
+                            info!("Accept connection failed: {:?}", e);
+                        }
+                    }
                 }
             }
 

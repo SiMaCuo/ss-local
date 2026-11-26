@@ -1,18 +1,17 @@
 use super::buf::DEFAULT_BUF_SIZE;
 use core::task::{Context, Poll};
-use futures::future::FusedFuture;
-use smol::{io::CloseFuture, prelude::*, ready};
-
 use std::{
     boxed::Box,
-    io,
+    io::{ErrorKind, Result},
     marker::Unpin,
     pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    // sync::{
+    //     Arc,
+    //     atomic::{AtomicUsize, Ordering},
+    // },
+    task::ready,
 };
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// A future which will copy all data from a reader into a writer.
 ///
@@ -23,15 +22,14 @@ use std::{
 #[derive(Debug)]
 pub struct CopyInto<'a, R: ?Sized, W: ?Sized> {
     reader: &'a mut R,
-    read_done: bool,
-    write_done: bool,
     writer: &'a mut W,
+    read_done: bool,
+    #[allow(dead_code)]
+    write_done: bool,
+    buf: Box<[u8]>,
     pos: usize,
     cap: usize,
     amt: usize,
-    buf: Box<[u8]>,
-    quit_mark: Arc<AtomicUsize>,
-    #[allow(dead_code)]
     name: String,
 }
 
@@ -44,28 +42,27 @@ where
     R: AsyncRead + ?Sized + Unpin,
     W: AsyncWrite + ?Sized + Unpin,
 {
-    pub fn new(reader: &'a mut R, writer: &'a mut W, quit_mark: Arc<AtomicUsize>, name: String) -> Self {
+    pub fn new(reader: &'a mut R, writer: &'a mut W, name: String) -> Self {
         CopyInto {
             reader,
+            writer,
             read_done: false,
             write_done: false,
-            writer,
-            amt: 0,
+            buf: Box::new([0; DEFAULT_BUF_SIZE]),
             pos: 0,
             cap: 0,
-            buf: Box::new([0; DEFAULT_BUF_SIZE]),
-            quit_mark,
+            amt: 0,
             name,
         }
     }
 
-    pub fn close(&mut self) -> CloseFuture<'_, W>
-    where
-        Self: Unpin,
-    {
-        log::debug!("{} close.", self.name);
-        self.writer.close()
-    }
+    // pub fn close(&mut self) -> CloseFuture<'_, W>
+    // where
+    //     Self: Unpin,
+    // {
+    //     log::debug!("{} close.", self.name);
+    //     self.writer.close()
+    // }
 }
 
 impl<R, W> Future for CopyInto<'_, R, W>
@@ -73,34 +70,30 @@ where
     R: AsyncRead + ?Sized + Unpin,
     W: AsyncWrite + ?Sized + Unpin,
 {
-    type Output = io::Result<usize>;
+    type Output = Result<usize>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = &mut *self;
-
-        if this.quit_mark.load(Ordering::Relaxed) == 0 {
-            this.write_done = true;
-            this.read_done = true;
-
-            return Poll::Ready(Ok(this.amt));
-        }
 
         loop {
             // If our buffer is empty, then we need to read some data to
             // continue.
             if this.pos == this.cap && !this.read_done {
-                let _ready = Pin::new(&mut this.reader).poll_read(cx, &mut this.buf);
+                let mut read_buf = ReadBuf::new(&mut this.buf);
+                let _ready = Pin::new(&mut this.reader).poll_read(cx, &mut read_buf);
                 log::debug!("{}, poll read {:?}", this.name, _ready);
                 match ready!(_ready) {
-                    Ok(n) if n > 0 => {
+                    Ok(()) if !read_buf.filled().is_empty() => {
                         this.pos = 0;
-                        this.cap = n;
+                        this.cap = read_buf.filled().len();
                     }
-
-                    _ => {
+                    Ok(()) => {
+                        // reading EOF
                         this.read_done = true;
-
-                        log::debug!("{}, poll read done", this.name,);
+                    }
+                    Err(e) => {
+                        log::debug!("{}, poll read done, {:?}", this.name, e);
+                        this.read_done;
                     }
                 }
             }
@@ -110,51 +103,43 @@ where
                 let _ready = Pin::new(&mut this.writer).poll_write(cx, &this.buf[this.pos..this.cap]);
                 log::debug!("{}, poll write {:?}", this.name, _ready);
                 match ready!(_ready) {
-                    Ok(n) if n > 0 => {
+                    Ok(n) => {
                         this.pos += n;
                         this.amt += n;
+                        if n == 0 {
+                            return Poll::Ready(Err(ErrorKind::WriteZero.into()));
+                        }
                     }
-
-                    _ => {
-                        this.write_done = true;
-                        this.read_done = true;
-                        log::debug!("{}, poll write done", this.name,);
-                        break;
+                    Err(e) => {
+                        log::debug!("{}, poll write done, {:?}", this.name, e);
+                        return Poll::Ready(Err(e));
                     }
                 }
             }
 
-            // If we've written all the data and we've seen EOF, flush out the
-            // data and finish the transfer.
-            // done with the entire transfer.
-            if this.pos == this.cap && this.read_done && !this.write_done {
-                let _ = ready!(Pin::new(&mut this.writer).poll_flush(cx))?;
-                this.write_done = true;
-            }
-
-            if this.write_done {
-                this.quit_mark.store(0, Ordering::Relaxed);
-
+            if this.pos == this.cap && this.read_done {
+                // let _ = ready!(Pin::new(&mut this.writer).poll_flush(cx))?;
+                // let _ = ready!(Pin::new(&mut this.writer).poll_shutdown(cx));
                 return Poll::Ready(Ok(this.amt));
             }
         }
     }
 }
 
-impl<R, W> FusedFuture for CopyInto<'_, R, W>
+// impl<R, W> FusedFuture for CopyInto<'_, R, W>
+// where
+//     R: AsyncRead + ?Sized + Unpin,
+//     W: AsyncWrite + ?Sized + Unpin,
+// {
+//     fn is_terminated(&self) -> bool {
+//         self.write_done
+//     }
+// }
+
+pub fn copy_into<'a, R, W>(r: &'a mut R, w: &'a mut W, name: String) -> CopyInto<'a, R, W>
 where
     R: AsyncRead + ?Sized + Unpin,
     W: AsyncWrite + ?Sized + Unpin,
 {
-    fn is_terminated(&self) -> bool {
-        self.write_done
-    }
-}
-
-pub fn copy_into<'a, R, W>(r: &'a mut R, w: &'a mut W, quit_mark: Arc<AtomicUsize>, name: String) -> CopyInto<'a, R, W>
-where
-    R: smol::io::AsyncRead + ?Sized + Unpin,
-    W: smol::io::AsyncWrite + ?Sized + Unpin,
-{
-    CopyInto::new(r, w, quit_mark, name)
+    CopyInto::new(r, w, name)
 }

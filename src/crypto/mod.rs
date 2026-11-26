@@ -1,16 +1,10 @@
 pub mod aead;
 pub mod cipher;
-
-// #[cfg(feature = "cipher-crypto2")]
-// mod crypto2;
 mod ring;
 
 use aead::{AeadDecryptor, AeadEncryptor};
 use cipher::CipherMethod::{self, *};
 use std::boxed::Box;
-
-// #[cfg(feature = "cipher-crypto2")]
-// use self::crypto2::Crypto2AeadCipher;
 use self::ring::RingAeadCipher;
 
 pub type BoxAeadDecryptor = Box<dyn AeadDecryptor + std::marker::Send + 'static>;
