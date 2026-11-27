@@ -30,12 +30,7 @@ where
     reader: BufReader<R>,
     read_step: ReadingStep,
     cipher: BoxAeadDecryptor,
-    // dec: Box<[u8]>,
     len: Box<[u8]>,
-    // pos: usize,
-    // cap: usize,
-    #[allow(dead_code)]
-    amt: usize,
     tag_len: usize,
 }
 
@@ -49,74 +44,10 @@ where
             reader: BufReader::new(r),
             read_step: ReadingStep::Length,
             cipher: new_aead_decryptor(method, &key_derive_from_pass, &salt),
-            // dec: Box::from(vec![0u8; SS_TCP_CHUNK_LEN]),
             len: Box::from(vec![0u8; 2 + tag_len]),
-            // pos: 0,
-            // cap: 0,
-            amt: 0,
             tag_len,
         }
     }
-
-    // #[allow(dead_code)]
-    // fn read_length(&mut self, cx: &mut Context) -> Poll<Result<usize, Error>> {
-    //     let expect_len = 2 + self.tag_len;
-    //     loop {
-    //         let ciphertext = ready!(self.reader.fill_buf(cx, expect_len))?;
-    //         if ciphertext.len() >= expect_len {
-    //             self.len[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
-    //             let _ = self.cipher.decrypt(&mut self.len[..expect_len]);
-    //             self.reader.consume(expect_len);
-    //             self.amt += expect_len;
-
-    //             return Ready(Ok(BigEndian::read_u16(&self.len[..2]) as usize));
-    //         }
-
-    //         if self.reader.is_eof() {
-    //             return Ready(Err(ErrorKind::UnexpectedEof.into()));
-    //         }
-    //     }
-    // }
-
-    // #[allow(dead_code)]
-    // fn read_data(&mut self, cx: &mut Context, data_len: usize, out: &mut [u8]) -> Poll<Result<usize, Error>> {
-    //     let expect_len = data_len + self.tag_len;
-    //     debug_assert!(expect_len <= SS_TCP_CHUNK_LEN);
-
-    //     loop {
-    //         let ciphertext = ready!(self.reader.fill_buf(cx, expect_len))?;
-    //         if ciphertext.len() >= expect_len {
-    //             let out_len = out.len();
-    //             let rlt = if out_len >= expect_len {
-    //                 out[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
-    //                 let _ = self.cipher.decrypt(&mut out[..expect_len]);
-
-    //                 Ok(data_len)
-    //             } else {
-    //                 self.dec[..expect_len].copy_from_slice(&ciphertext[..expect_len]);
-    //                 let _ = self.cipher.decrypt(&mut self.dec[..expect_len]);
-    //                 if out_len >= data_len {
-    //                     out[..data_len].copy_from_slice(&self.dec[..data_len]);
-    //                     Ok(data_len)
-    //                 } else {
-    //                     out[..].copy_from_slice(&self.dec[..out_len]);
-    //                     self.cap = data_len;
-    //                     self.pos = out_len;
-    //                     Ok(out_len)
-    //                 }
-    //             };
-
-    //             self.reader.consume(expect_len);
-    //             self.amt += expect_len;
-
-    //             return Ready(rlt);
-    //         }
-
-    //         if self.reader.is_eof() {
-    //             return Ready(Err(ErrorKind::UnexpectedEof.into()));
-    //         }
-    //     }
-    // }
 
     fn decrypt_data(&mut self, cx: &mut Context, out: &mut ReadBuf) -> (Poll<Result<usize, Error>>, usize) {
         let (mut copy_len, bufcap) = (0usize, out.remaining());
@@ -204,56 +135,6 @@ where
 
         (Ready(Ok(copy_len)), copy_len)
     }
-    // fn decrypt_data(&mut self, cx: &mut Context, buf: &mut [u8]) -> (Poll<Result<usize, Error>>, usize) {
-    //     let (mut copy_len, cap) = (0usize, buf.len());
-    //     while copy_len < cap {
-    //         match self.read_step {
-    //             ReadingStep::Length => match self.read_length(cx) {
-    //                 Ready(Ok(data_len)) => {
-    //                     log::debug!("  decrypt data length {}", data_len);
-    //                     if data_len == 0 {
-    //                         return (Ready(Ok(0)), copy_len);
-    //                     }
-
-    //                     self.read_step = ReadingStep::Data(data_len);
-    //                 }
-
-    //                 Ready(Err(e)) => {
-    //                     log::debug!(" decrypt data lenth ({:?}, {})", e, copy_len);
-    //                     return (Ready(Err(e)), copy_len);
-    //                 }
-
-    //                 Pending => {
-    //                     log::debug!(" decrypt data len (Pending, {})", copy_len);
-    //                     return (Pending, copy_len);
-    //                 }
-    //             },
-
-    //             ReadingStep::Data(data_len) => match self.read_data(cx, data_len, &mut buf[copy_len..]) {
-    //                 Ready(Ok(n)) => {
-    //                     if n == 0 {
-    //                         return (Ready(Ok(0)), copy_len);
-    //                     }
-    //                     log::debug!("  decrypt payload {} bytes", n);
-    //                     copy_len += n;
-    //                     self.read_step = ReadingStep::Length;
-    //                 }
-
-    //                 Ready(Err(e)) => {
-    //                     log::debug!(" decrypt payload ({:?}, {})", e, copy_len);
-    //                     return (Ready(Err(e)), copy_len);
-    //                 }
-
-    //                 Pending => {
-    //                     log::debug!(" decrypt payload (Pending, {})", copy_len);
-    //                     return (Pending, copy_len);
-    //                 }
-    //             },
-    //         }
-    //     }
-
-    //     return (Ready(Ok(copy_len)), copy_len);
-    // }
 }
 
 impl<R> AsyncRead for AeadDecryptedReader<R>
@@ -263,13 +144,6 @@ where
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context, buf: &mut ReadBuf) -> Poll<Result<(), Error>> {
         debug_assert!(buf.remaining() > 0);
         let this = &mut *self;
-        // if this.cap - this.pos > 0 {
-        //     let len = this.cap - this.pos;
-        //     debug_assert!(this.cap - this.pos < buf.remaining());
-        //     buf.put_slice(&this.dec[this.pos..this.pos + len]);
-        //     this.pos = 0;
-        //     this.cap = 0;
-        // }
 
         let (poll, copy_len) = this.decrypt_data(cx, buf);
         match ready!(poll) {
