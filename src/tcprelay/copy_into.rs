@@ -85,6 +85,9 @@ where
                 let _ready = Pin::new(&mut this.reader).poll_read(cx, &mut read_buf);
                 log::debug!("{}, poll read {:?}", this.name, _ready);
                 let nread = read_buf.filled().len();
+                if nread > 0 {
+                    log::info!("====nread {:.2}K", nread/1024);
+                }
                 this.pos = 0;
                 this.cap = nread;
                 match _ready {

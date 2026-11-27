@@ -7,7 +7,9 @@ use core::task::{
     Poll::{self, *},
 };
 use std::{
-    io::{Error, ErrorKind}, pin::Pin, task::ready,
+    io::{Error, ErrorKind},
+    pin::Pin,
+    task::ready,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -28,10 +30,10 @@ where
     reader: BufReader<R>,
     read_step: ReadingStep,
     cipher: BoxAeadDecryptor,
-    dec: Box<[u8]>,
+    // dec: Box<[u8]>,
     len: Box<[u8]>,
-    pos: usize,
-    cap: usize,
+    // pos: usize,
+    // cap: usize,
     #[allow(dead_code)]
     amt: usize,
     tag_len: usize,
@@ -47,10 +49,10 @@ where
             reader: BufReader::new(r),
             read_step: ReadingStep::Length,
             cipher: new_aead_decryptor(method, &key_derive_from_pass, &salt),
-            dec: Box::from(vec![0u8; SS_TCP_CHUNK_LEN]),
+            // dec: Box::from(vec![0u8; SS_TCP_CHUNK_LEN]),
             len: Box::from(vec![0u8; 2 + tag_len]),
-            pos: 0,
-            cap: 0,
+            // pos: 0,
+            // cap: 0,
             amt: 0,
             tag_len,
         }
@@ -154,7 +156,7 @@ where
                 }
 
                 ReadingStep::Data(data_len) => {
-                    if data_len > out.remaining() - copy_len {
+                    if data_len > out.remaining() {
                         if fillbuf_pending {
                             return (Pending, copy_len);
                         } else {
@@ -261,13 +263,13 @@ where
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context, buf: &mut ReadBuf) -> Poll<Result<(), Error>> {
         debug_assert!(buf.remaining() > 0);
         let this = &mut *self;
-        if this.cap - this.pos > 0 {
-            let len = this.cap - this.pos;
-            debug_assert!(this.cap - this.pos < buf.remaining());
-            buf.put_slice(&this.dec[this.pos..this.pos + len]);
-            this.pos = 0;
-            this.cap = 0;
-        }
+        // if this.cap - this.pos > 0 {
+        //     let len = this.cap - this.pos;
+        //     debug_assert!(this.cap - this.pos < buf.remaining());
+        //     buf.put_slice(&this.dec[this.pos..this.pos + len]);
+        //     this.pos = 0;
+        //     this.cap = 0;
+        // }
 
         let (poll, copy_len) = this.decrypt_data(cx, buf);
         match ready!(poll) {
@@ -348,13 +350,15 @@ where
         for i in 0..(buf.len() / self.payload_len) + 1 {
             let boundary = (i + 1) * self.payload_len;
             let end = if boundary > buf.len() { buf.len() } else { boundary };
-
-            let n = ready!(self.write_payload(cx, &buf[i * self.payload_len..end]))?;
-            total_write += n;
-            // May wirte zero error, may not be fully written later
-            if n == 0 {
-                break;
+            let start = i * self.payload_len;
+            if start < end {
+                let n = ready!(self.write_payload(cx, &buf[start..end]))?;
+                total_write += n;
+                if n == 0 {
+                    break;
+                }
             }
+            // May wirte zero error, may not be fully written later
         }
 
         Ready(Ok(total_write))
