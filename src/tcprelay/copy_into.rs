@@ -1,5 +1,8 @@
 use super::buf::DEFAULT_BUF_SIZE;
-use core::task::{Context, Poll};
+use core::task::{
+    Context,
+    Poll::{self, Pending, Ready},
+};
 use std::{
     boxed::Box,
     io::{ErrorKind, Result},
@@ -76,24 +79,34 @@ where
         let this = &mut *self;
 
         loop {
-            // If our buffer is empty, then we need to read some data to
-            // continue.
+            let mut read_pending = false;
             if this.pos == this.cap && !this.read_done {
                 let mut read_buf = ReadBuf::new(&mut this.buf);
                 let _ready = Pin::new(&mut this.reader).poll_read(cx, &mut read_buf);
                 log::debug!("{}, poll read {:?}", this.name, _ready);
-                match ready!(_ready) {
-                    Ok(()) if !read_buf.filled().is_empty() => {
-                        this.pos = 0;
-                        this.cap = read_buf.filled().len();
+                let nread = read_buf.filled().len();
+                this.pos = 0;
+                this.cap = nread;
+                match _ready {
+                    Ready(Ok(())) => {
+                        if nread == 0 {
+                            this.read_done = true;
+                        }
                     }
-                    Ok(()) => {
-                        // reading EOF
-                        this.read_done = true;
+                    Pending => {
+                        if nread > 0 {
+                            read_pending = true;
+                        } else {
+                            return Pending;
+                        }
                     }
-                    Err(e) => {
+                    Ready(Err(e)) => {
                         log::debug!("{}, poll read done, {:?}", this.name, e);
-                        this.read_done;
+                        if nread > 0 {
+                            this.read_done = true;
+                        } else {
+                            return Ready(Err(e));
+                        }
                     }
                 }
             }
@@ -107,20 +120,24 @@ where
                         this.pos += n;
                         this.amt += n;
                         if n == 0 {
-                            return Poll::Ready(Err(ErrorKind::WriteZero.into()));
+                            return Ready(Err(ErrorKind::WriteZero.into()));
                         }
                     }
                     Err(e) => {
                         log::debug!("{}, poll write done, {:?}", this.name, e);
-                        return Poll::Ready(Err(e));
+                        return Ready(Err(e));
                     }
                 }
             }
 
+            
             if this.pos == this.cap && this.read_done {
-                // let _ = ready!(Pin::new(&mut this.writer).poll_flush(cx))?;
-                // let _ = ready!(Pin::new(&mut this.writer).poll_shutdown(cx));
-                return Poll::Ready(Ok(this.amt));
+                let _ = ready!(Pin::new(&mut this.writer).poll_flush(cx))?;
+                return Ready(Ok(this.amt));
+            }
+
+            if read_pending {
+                return Pending;
             }
         }
     }

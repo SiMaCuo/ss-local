@@ -262,16 +262,11 @@ where
         debug_assert!(buf.remaining() > 0);
         let this = &mut *self;
         if this.cap - this.pos > 0 {
-            let len = (this.cap - this.pos).min(buf.remaining());
+            let len = this.cap - this.pos;
+            debug_assert!(this.cap - this.pos < buf.remaining());
             buf.put_slice(&this.dec[this.pos..this.pos + len]);
-            this.pos += len;
-
-            if this.pos >= this.cap {
-                this.pos = 0;
-                this.cap = 0;
-            }
-
-            debug_assert!(buf.remaining() > 0);
+            this.pos = 0;
+            this.cap = 0;
         }
 
         let (poll, copy_len) = this.decrypt_data(cx, buf);
