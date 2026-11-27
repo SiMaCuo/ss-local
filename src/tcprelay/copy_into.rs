@@ -1,4 +1,4 @@
-use super::buf::DEFAULT_BUF_SIZE;
+use super::{buf::DEFAULT_BUF_SIZE, timeout::*};
 use core::task::{
     Context,
     Poll::{self, Pending, Ready},
@@ -8,10 +8,6 @@ use std::{
     io::{ErrorKind, Result},
     marker::Unpin,
     pin::Pin,
-    // sync::{
-    //     Arc,
-    //     atomic::{AtomicUsize, Ordering},
-    // },
     task::ready,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -22,13 +18,11 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 /// bytes copied or an error if one happens.
 ///
 /// [`copy_into`]: fn.copy_into.html
-#[derive(Debug)]
 pub struct CopyInto<'a, R: ?Sized, W: ?Sized> {
     reader: &'a mut R,
     writer: &'a mut W,
+    act: &'a Activity,
     read_done: bool,
-    #[allow(dead_code)]
-    write_done: bool,
     buf: Box<[u8]>,
     pos: usize,
     cap: usize,
@@ -45,12 +39,12 @@ where
     R: AsyncRead + ?Sized + Unpin,
     W: AsyncWrite + ?Sized + Unpin,
 {
-    pub fn new(reader: &'a mut R, writer: &'a mut W, name: String) -> Self {
+    pub fn new(reader: &'a mut R, writer: &'a mut W, act: &'a Activity, name: String) -> Self {
         CopyInto {
             reader,
             writer,
+            act,
             read_done: false,
-            write_done: false,
             buf: Box::new([0; DEFAULT_BUF_SIZE]),
             pos: 0,
             cap: 0,
@@ -58,14 +52,6 @@ where
             name,
         }
     }
-
-    // pub fn close(&mut self) -> CloseFuture<'_, W>
-    // where
-    //     Self: Unpin,
-    // {
-    //     log::debug!("{} close.", self.name);
-    //     self.writer.close()
-    // }
 }
 
 impl<R, W> Future for CopyInto<'_, R, W>
@@ -77,6 +63,7 @@ where
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = &mut *self;
+        this.act.touch();
 
         loop {
             let mut read_pending = false;
@@ -143,20 +130,11 @@ where
     }
 }
 
-// impl<R, W> FusedFuture for CopyInto<'_, R, W>
-// where
-//     R: AsyncRead + ?Sized + Unpin,
-//     W: AsyncWrite + ?Sized + Unpin,
-// {
-//     fn is_terminated(&self) -> bool {
-//         self.write_done
-//     }
-// }
 
-pub fn copy_into<'a, R, W>(r: &'a mut R, w: &'a mut W, name: String) -> CopyInto<'a, R, W>
+pub fn copy_into<'a, R, W>(r: &'a mut R, w: &'a mut W, act: &'a Activity, name: String) -> CopyInto<'a, R, W>
 where
     R: AsyncRead + ?Sized + Unpin,
     W: AsyncWrite + ?Sized + Unpin,
 {
-    CopyInto::new(r, w, name)
+    CopyInto::new(r, w, act, name)
 }

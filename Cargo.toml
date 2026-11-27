@@ -25,7 +25,7 @@ byte_string = "1.0.0"
 clap = "2.32.0"
 aws-lc-rs = { version="~1.19.0", optional=true }
 ring = { version="~0.16.20", optional = true }
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "time", "macros", "sync"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "time", "macros"] }
 
 [target.'cfg(windows)'.dependencies]
 pcre2 = "0.1.1"
@@ -39,11 +39,9 @@ cipher-aws-lc = ["aws-lc-rs"]
 cipher-ring = ["ring"]
 
 [profile.release]
-debug = true
-#debug-assertions = false
-#overflow-checks = false
-#lto = "fat"
+debug = false
+lto = "fat"
 incremental = false
 codegen-units = 1
-#strip = "symbols"
+strip = "symbols"
 panic = "abort"

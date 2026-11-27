@@ -2,6 +2,7 @@ mod buf;
 pub mod copy_into;
 pub mod crypto_io;
 pub mod socks5;
+pub mod timeout;
 
 pub const KB: usize = 1024;
 // ppoe connection mtu seem to be 1492, ip header 20, tcp header 20

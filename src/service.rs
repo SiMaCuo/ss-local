@@ -4,6 +4,7 @@ use super::{
         copy_into::copy_into,
         crypto_io::{AeadDecryptedReader, AeadEncryptorWriter},
         socks5::{self, Address, Reply, SOCKS5_VERSION, s5code},
+        timeout::*,
     },
 };
 use crate::crypto::cipher::CipherMethod;
@@ -19,12 +20,13 @@ use std::{
     sync::Arc,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncRead, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{
         TcpListener,
         TcpStream,
         tcp::{OwnedReadHalf, OwnedWriteHalf},
     },
+    time::Duration,
 };
 
 #[cfg(target_os = "windows")]
@@ -218,16 +220,17 @@ async fn proxy_copy<'a, R, W>(
     W: AsyncWrite + Unpin,
 {
     debug!("{} <- {}, two-way copying", host_name, peer_addr);
-    // let mut l2r = async { copy_into(local_read, remote_write, format!("{} <- {}", host_name, peer_addr)).await };
-
-    // let mut r2l = async { copy_into(remote_read, local_write, format!("{} -> {}", host_name, peer_addr)).await };
+    let act = Activity::new();
 
     tokio::select! {
-        _ = async {
-            copy_into(local_read, remote_write, format!("{} <- {}", host_name, peer_addr)).await
+        _ = {
+            copy_into(local_read, remote_write, &act, format!("{} <- {}", host_name, peer_addr))
         } => {},
-        _ = async {
-            copy_into(remote_read, local_write, format!("{} -> {}", host_name, peer_addr)).await
+        _ = {
+            copy_into(remote_read, local_write, &act, format!("{} -> {}", host_name, peer_addr))
+        } => {},
+        _ = {
+            idle_timeouts(&act, Duration::from_secs(600), Duration::from_secs(3600))
         } => {},
     }
 
