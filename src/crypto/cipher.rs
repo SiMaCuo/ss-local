@@ -6,10 +6,10 @@ use ring as cipher;
 use cipher::{
     aead::{self, AES_256_GCM, CHACHA20_POLY1305},
     hkdf,
+    rand,
 };
 
 use bytes::{Bytes, BytesMut};
-use rand::{self, RngCore};
 use std::{
     io::{Error, ErrorKind},
     str::FromStr,
@@ -78,9 +78,7 @@ impl CipherMethod {
 
     pub fn gen_salt(&self) -> Bytes {
         let mut salt = BytesMut::zeroed(self.salt_len());
-
-        let mut rng = rand::thread_rng();
-        rng.fill_bytes(&mut salt);
+        rand::fill(&mut salt).expect("gen salt failure");
 
         salt.freeze()
     }

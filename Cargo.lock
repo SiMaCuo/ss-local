@@ -831,7 +831,6 @@ dependencies = [
  "log4rs",
  "parking_lot 0.7.1",
  "pcre2",
- "rand",
  "ring",
  "serde",
  "serde_derive",
