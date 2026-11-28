@@ -1,4 +1,4 @@
-use super::{SS_TCP_CHUNK_LEN, buf::BufReader};
+use super::{ENC_CHUNK_LEN, buf::BufReader};
 use crate::crypto::{BoxAeadDecryptor, BoxAeadEncryptor, cipher::CipherMethod, new_aead_decryptor, new_aead_encryptor};
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{Bytes, BytesMut};
@@ -181,11 +181,11 @@ where
 {
     pub fn new(w: W, method: CipherMethod, key_derive_from_pass: Bytes, salt: Bytes) -> Self {
         let tag_len = method.tag_len();
-        let payload_len = SS_TCP_CHUNK_LEN - 2 - 2 * tag_len;
+        let payload_len = ENC_CHUNK_LEN - 2 - 2 * tag_len;
         AeadEncryptorWriter {
             writer: w,
             cipher: new_aead_encryptor(method, &key_derive_from_pass, &salt),
-            enc_data: Box::from(vec![0u8; SS_TCP_CHUNK_LEN]),
+            enc_data: Box::from(vec![0u8; ENC_CHUNK_LEN]),
             remaining: BytesMut::new(),
             pos: 0,
             payload_len,

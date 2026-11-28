@@ -5,5 +5,4 @@ pub mod socks5;
 pub mod timeout;
 
 pub const KB: usize = 1024;
-// ppoe connection mtu seem to be 1492, ip header 20, tcp header 20
-pub const SS_TCP_CHUNK_LEN: usize = 1452;
+pub const ENC_CHUNK_LEN: usize = 13*KB;
