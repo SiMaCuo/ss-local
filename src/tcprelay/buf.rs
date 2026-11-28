@@ -89,38 +89,13 @@ impl<R: AsyncRead + Unpin> BufReader<R> {
         Ready(Ok(total_read))
     }
 
-    // #[allow(dead_code)]
-    // pub fn fill_buf(&mut self, cx: &mut Context, expect_len: usize) -> Poll<Result<&[u8], Error>> {
-    //     debug_assert!(expect_len <= self.buf.len());
-
-    //     if !self.eof {
-    //         if self.pos >= self.end {
-    //             debug_assert!(self.pos == self.end);
-    //             self.end = ready!(Pin::new(&mut self.inner).poll_read(cx, &mut self.buf))?;
-    //             self.eof = self.end == 0;
-    //             self.pos = 0;
-    //         } else if expect_len > self.end - self.pos {
-    //             self.buf.copy_within(self.pos..self.end, 0);
-
-    //             self.end = self.end - self.pos;
-    //             self.pos = 0;
-
-    //             let read_len = ready!(Pin::new(&mut self.inner).poll_read(cx, &mut self.buf[self.end..]))?;
-    //             self.eof = read_len == 0;
-    //             self.end += read_len;
-    //         }
-    //     }
-
-    //     Ready(Ok(&self.buf[self.pos..self.end]))
-    // }
-
     pub fn buffer(&mut self) -> &mut [u8] {
         &mut self.buf[self.pos..self.end]
     }
 
     pub fn len(&self) -> usize {
         self.end - self.pos
-    }
+    } 
 
     pub fn consume(&mut self, amt: usize) {
         self.pos = (self.pos + amt).min(self.end);
